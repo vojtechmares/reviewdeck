@@ -8,11 +8,14 @@
  */
 
 import { protocol } from 'electron'
-import { IMAGE_SCHEME, resolveImageRequest } from '@shared/images.ts'
+import { accountHosts, IMAGE_SCHEME, resolveImageRequest } from '@shared/images.ts'
 import type { Account, ProviderKind } from '@shared/types.ts'
 import { getAccount, getToken, listAccounts } from './store.ts'
 
 const FETCH_TIMEOUT = 20_000
+
+/** Enough for the usual hop to object storage, not enough to be walked in circles. */
+const MAX_REDIRECTS = 4
 
 /**
  * How each host expects a token. The same shapes the adapters send - an upload URL
@@ -62,11 +65,7 @@ export function serveImages(): void {
     }
 
     try {
-      const upstream = await fetch(resolved.target, {
-        headers: { ...authorization(account, token), Accept: 'image/*,*/*;q=0.8' },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT),
-        redirect: 'follow',
-      })
+      const upstream = await fetchImage(account, token, resolved.target)
       if (!upstream.ok) return new Response(null, { status: upstream.status })
 
       const type = upstream.headers.get('content-type')
@@ -79,4 +78,51 @@ export function serveImages(): void {
       return new Response(null, { status: 502 })
     }
   })
+}
+
+/**
+ * Follows redirects by hand, so the credential stops at the account's own hosts.
+ *
+ * `redirect: 'follow'` would not do: fetch strips `Authorization` when a redirect
+ * crosses origins, but GitLab's `PRIVATE-TOKEN` is an ordinary header and would be
+ * carried straight on. An upload URL that hops to object storage is the everyday
+ * case, and an open redirect on the instance is the adversarial one - in both the
+ * token has no business at the far end.
+ *
+ * Once dropped the credential never comes back, so a chain that returns to the
+ * account's host cannot pick it up again.
+ */
+async function fetchImage(account: Account, token: string, target: string): Promise<Response> {
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT)
+  const hosts = accountHosts(account)
+  let current = target
+  let credentialed = true
+
+  for (let hop = 0; ; hop++) {
+    const response = await fetch(current, {
+      headers: {
+        ...(credentialed ? authorization(account, token) : { 'User-Agent': 'Reviewdeck' }),
+        Accept: 'image/*,*/*;q=0.8',
+      },
+      redirect: 'manual',
+      signal,
+    })
+
+    const location = response.status >= 300 && response.status < 400 && response.headers.get('location')
+    if (!location) return response
+    if (hop >= MAX_REDIRECTS) return new Response(null, { status: 508 })
+
+    let next: URL
+    try {
+      next = new URL(location, current)
+    } catch {
+      return new Response(null, { status: 502 })
+    }
+    if (next.protocol !== 'https:' && next.protocol !== 'http:') {
+      return new Response(null, { status: 502 })
+    }
+
+    credentialed = credentialed && hosts.includes(next.host.toLowerCase())
+    current = next.toString()
+  }
 }
