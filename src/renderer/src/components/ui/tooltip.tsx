@@ -17,7 +17,7 @@ export function Tooltip({
 
   return (
     <span
-      className="relative inline-flex"
+      className={cn('relative inline-flex', open && 'z-50')}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
