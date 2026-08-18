@@ -20,7 +20,8 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
   still waiting.
 - **A real diff viewer** - side by side or unified, syntax highlighted in a theme that suits the
   app in both light and dark, with inline comments on any line and existing review comments
-  anchored where they were left.
+  anchored where they were left. Grammars load when a file that needs one is first opened, so
+  Terraform one week and Ruby the next both work and neither is paid for at startup.
 - **Threaded conversations.** Replies sit under what they answer, and where the host supports it
   you can reply and resolve without leaving the app. A comment on code that has since changed is
   labelled outdated rather than pointed at whatever now sits on that line.
@@ -176,7 +177,7 @@ This is an MVP.
 
 - macOS only.
 - Bitbucket Server (the self-hosted one) uses a different API and is not supported; Bitbucket Cloud is.
-- Syntax highlighting covers a common set of languages; a file outside it reads as plain text.
+- Syntax highlighting covers what the extension map names; a file outside it reads as plain text.
 - Resolving a thread works everywhere except Forgejo, whose REST API has no endpoint for it at
   all - so the control is hidden there rather than offered and failed.
 - Submitting a review sends its comments in one call on GitHub, which takes them on review

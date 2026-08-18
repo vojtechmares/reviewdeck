@@ -140,12 +140,30 @@ test('hunkTokens gives a split row with only one side nothing for the other', ()
   )
 })
 
-test('languageFor resolves the extensions this build carries grammars for', () => {
+test('languageFor resolves the languages a review actually turns up', () => {
   assert.equal(languageFor('src/main/index.ts'), 'typescript')
   assert.equal(languageFor('src/App.tsx'), 'tsx')
+  assert.equal(languageFor('internal/capture.go'), 'go')
   assert.equal(languageFor('infra/main.tf'), 'hcl')
-  assert.equal(languageFor('deploy/values.YAML'), 'yaml')
+  assert.equal(languageFor('infra/prod.tfvars'), 'hcl')
+  assert.equal(languageFor('app/models/user.rb'), 'ruby')
+  assert.equal(languageFor('src/Controller.php'), 'php')
+  assert.equal(languageFor('src/lib.rs'), 'rust')
   assert.equal(languageFor('scripts/release.sh'), 'shellscript')
+  assert.equal(languageFor('db/schema.sql'), 'sql')
+})
+
+test('languageFor resolves the configuration formats every repository has', () => {
+  assert.equal(languageFor('deploy/values.YAML'), 'yaml')
+  assert.equal(languageFor('.github/workflows/ci.yml'), 'yaml')
+  assert.equal(languageFor('Cargo.toml'), 'toml')
+  assert.equal(languageFor('tsconfig.json'), 'json')
+  assert.equal(languageFor('.vscode/settings.jsonc'), 'jsonc')
+  assert.equal(languageFor('setup.cfg'), 'ini')
+  assert.equal(languageFor('nginx.conf'), 'ini')
+  assert.equal(languageFor('gradle.properties'), 'properties')
+  assert.equal(languageFor('infra/network.bicep'), 'bicep')
+  assert.equal(languageFor('api/service.proto'), 'proto')
 })
 
 test('languageFor takes the last extension, so a compound name still resolves', () => {
@@ -158,6 +176,12 @@ test('languageFor resolves well-known names that carry no extension', () => {
   assert.equal(languageFor('Dockerfile'), 'docker')
   assert.equal(languageFor('build/Dockerfile.dev'), 'docker')
   assert.equal(languageFor('Makefile'), 'make')
+  assert.equal(languageFor('GNUmakefile'), 'make')
+  assert.equal(languageFor('Rakefile'), 'ruby')
+  assert.equal(languageFor('Gemfile'), 'ruby')
+  assert.equal(languageFor('Jenkinsfile'), 'groovy')
+  assert.equal(languageFor('CMakeLists.txt'), 'cmake')
+  assert.equal(languageFor('.zshrc'), 'shellscript')
 })
 
 test('languageFor gives up on anything else rather than throwing', () => {
@@ -168,7 +192,15 @@ test('languageFor gives up on anything else rather than throwing', () => {
   assert.equal(languageFor('some/dir/'), null)
 })
 
-test('every language the detector can name is one the grammar set is built from', () => {
+test('every language the detector can name is one the registry can actually load', async () => {
+  // Only the registry of import thunks is read here, not a single grammar: this is
+  // the guard that catches a language id that does not exist, which would otherwise
+  // show up as one file quietly rendering plain and nothing saying why.
+  const { bundledLanguages } = await import('shiki/langs')
+
+  const unknown = HIGHLIGHT_LANGUAGES.filter((language) => !(language in bundledLanguages))
+  assert.deepEqual(unknown, [], `not in the registry: ${unknown.join(', ')}`)
+
   for (const path of ['a.ts', 'a.tf', 'Dockerfile', 'Makefile', 'a.kt', 'a.jsonc']) {
     const language = languageFor(path)
     assert.ok(language && HIGHLIGHT_LANGUAGES.includes(language), `${path} -> ${language}`)

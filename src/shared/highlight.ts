@@ -67,68 +67,199 @@ export function hunkTokens<T>(hunk: DiffHunk, oldSide: T[][], newSide: T[][]): M
 }
 
 /**
- * The languages this build carries grammars for. Universal coverage is its own
- * change; until then an unlisted file reads as plain text, which is the same thing
- * it read as before.
+ * What to tokenise a file as.
+ *
+ * Owned code rather than a library's guess, because the awkward cases are the ones
+ * that matter here: compound extensions, files that carry no extension at all, and
+ * the configuration formats that turn up in every infrastructure repository and get
+ * left out of curated bundles.
+ *
+ * A name that is not in here resolves to nothing and renders plain. That is a
+ * deliberate boundary: guessing a language from an unknown extension would tokenise
+ * a file as something it is not, which reads worse than not colouring it.
  */
 const BY_EXTENSION: Record<string, string> = {
+  adoc: 'asciidoc',
+  ahk: 'ahk',
+  applescript: 'applescript',
+  as: 'actionscript-3',
+  asm: 'asm',
+  astro: 'astro',
+  awk: 'awk',
   bash: 'shellscript',
+  bat: 'bat',
+  bicep: 'bicep',
   c: 'c',
+  cc: 'cpp',
+  cfg: 'ini',
   cjs: 'javascript',
+  clj: 'clojure',
+  cljc: 'clojure',
+  cljs: 'clojure',
+  cmake: 'cmake',
+  cmd: 'bat',
+  cob: 'cobol',
+  coffee: 'coffee',
+  conf: 'ini',
   cpp: 'cpp',
   cs: 'csharp',
+  cshtml: 'razor',
   css: 'css',
+  csv: 'csv',
   cts: 'typescript',
+  cxx: 'cpp',
+  d: 'd',
+  dart: 'dart',
+  diff: 'diff',
+  ejs: 'erb',
+  elm: 'elm',
+  erl: 'erlang',
+  ex: 'elixir',
+  exs: 'elixir',
+  fish: 'fish',
+  fs: 'fsharp',
+  fsx: 'fsharp',
+  gemspec: 'ruby',
+  gleam: 'gleam',
+  glsl: 'glsl',
   go: 'go',
+  gql: 'graphql',
+  gradle: 'groovy',
+  graphql: 'graphql',
+  groovy: 'groovy',
   h: 'c',
+  handlebars: 'handlebars',
+  haxe: 'haxe',
+  hbs: 'handlebars',
   hcl: 'hcl',
+  hh: 'cpp',
+  hlsl: 'hlsl',
   hpp: 'cpp',
+  hrl: 'erlang',
+  hs: 'haskell',
   htm: 'html',
   html: 'html',
+  http: 'http',
+  hxx: 'cpp',
+  ini: 'ini',
   java: 'java',
+  jl: 'julia',
   js: 'javascript',
   json: 'json',
+  json5: 'json5',
   jsonc: 'jsonc',
+  jsonl: 'json',
   jsx: 'jsx',
   kt: 'kotlin',
   kts: 'kotlin',
+  latex: 'latex',
+  less: 'less',
+  liquid: 'liquid',
+  lua: 'lua',
+  m: 'objective-c',
   markdown: 'markdown',
   md: 'markdown',
+  mdx: 'mdx',
   mjs: 'javascript',
+  mk: 'make',
+  ml: 'ocaml',
+  mli: 'ocaml',
+  mm: 'objective-cpp',
+  move: 'move',
   mts: 'typescript',
+  nim: 'nim',
+  nix: 'nix',
+  odin: 'odin',
+  patch: 'diff',
+  pas: 'pascal',
   php: 'php',
+  pl: 'perl',
+  plist: 'xml',
+  pm: 'perl',
+  powershell: 'powershell',
+  pp: 'puppet',
+  prisma: 'prisma',
+  pro: 'prolog',
+  properties: 'properties',
+  proto: 'proto',
+  ps1: 'powershell',
+  psm1: 'powershell',
+  pug: 'pug',
+  purs: 'purescript',
   py: 'python',
+  pyi: 'python',
+  r: 'r',
+  rake: 'ruby',
   rb: 'ruby',
   rs: 'rust',
+  rst: 'rst',
+  s: 'asm',
+  sass: 'sass',
+  sc: 'scala',
+  scala: 'scala',
+  scm: 'scheme',
   scss: 'scss',
   sh: 'shellscript',
+  sol: 'solidity',
   sql: 'sql',
+  styl: 'stylus',
+  svelte: 'svelte',
+  svg: 'xml',
   swift: 'swift',
+  tcl: 'tcl',
+  tex: 'latex',
   tf: 'hcl',
   tfvars: 'hcl',
   toml: 'toml',
   ts: 'typescript',
+  tsv: 'csv',
   tsx: 'tsx',
+  twig: 'twig',
+  v: 'v',
+  vb: 'vb',
+  vhd: 'vhdl',
+  vhdl: 'vhdl',
+  vim: 'viml',
+  vue: 'vue',
+  wat: 'wasm',
+  wgsl: 'wgsl',
   xml: 'xml',
+  xsd: 'xml',
+  xsl: 'xml',
   yaml: 'yaml',
   yml: 'yaml',
+  zig: 'zig',
   zsh: 'shellscript',
 }
 
 /** Files that carry no extension at all but are still unambiguous. */
 const BY_FILENAME: Record<string, string> = {
+  '.bash_profile': 'shellscript',
+  '.bashrc': 'shellscript',
+  '.gitconfig': 'ini',
+  '.profile': 'shellscript',
+  '.zshrc': 'shellscript',
+  'cmakelists.txt': 'cmake',
+  brewfile: 'ruby',
   dockerfile: 'docker',
+  gemfile: 'ruby',
+  gnumakefile: 'make',
+  jenkinsfile: 'groovy',
+  justfile: 'make',
   makefile: 'make',
+  podfile: 'ruby',
+  rakefile: 'ruby',
+  vagrantfile: 'ruby',
 }
 
-/** Every language `languageFor` can name, so the grammar set can be checked against it. */
+/** Every language `languageFor` can name, so the registry can be checked against it. */
 export const HIGHLIGHT_LANGUAGES: string[] = [
   ...new Set([...Object.values(BY_EXTENSION), ...Object.values(BY_FILENAME)]),
 ].sort()
 
 /**
- * The language to tokenize a path as, or null when this build cannot - in which
- * case the file renders as plain text rather than as an error.
+ * The language to tokenise a path as, or null when this app has no mapping for it -
+ * in which case the file renders as plain text rather than as an error.
  */
 export function languageFor(path: string): string | null {
   const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
@@ -137,7 +268,7 @@ export function languageFor(path: string): string | null {
   const byName = BY_FILENAME[name]
   if (byName) return byName
 
-  // `Dockerfile.dev` is still a Dockerfile.
+  // `Dockerfile.dev` is still a Dockerfile, and `Makefile.common` still a makefile.
   const base = name.slice(0, name.indexOf('.'))
   if (base && BY_FILENAME[base]) return BY_FILENAME[base]
 
