@@ -1,11 +1,11 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { ChevronRight, FilePlus2, FileMinus2, FileSymlink, MessageSquarePlus, Plus } from 'lucide-react'
 import { parsePatch, toSplitRows, type DiffHunk, type DiffLine } from '@shared/diff'
-import type { DiffFile, LineCommentDraft, PullComment } from '@shared/types'
+import type { CommentThread, DiffFile, LineCommentDraft } from '@shared/types'
 import { cn } from '@/lib/utils'
-import { Avatar } from './ui/avatar'
 import { Button } from './ui/button'
 import { Textarea } from './ui/input'
+import { ThreadCard } from './Thread'
 
 /** Files past this many lines start collapsed so opening a big PR stays instant. */
 const AUTO_COLLAPSE_LINES = 600
@@ -27,8 +27,8 @@ const EAGER_FILES = 2
 const ESTIMATED_ROW_HEIGHT = 19
 const ESTIMATED_HUNK_HEADER_HEIGHT = 27
 
-/** Shared so a file without comments keeps the same array across renders. */
-const NO_COMMENTS: PullComment[] = []
+/** Shared so a file without threads keeps the same array across renders. */
+const NO_THREADS: CommentThread[] = []
 
 export interface CommentTarget {
   path: string
@@ -38,22 +38,31 @@ export interface CommentTarget {
 
 interface DiffViewProps {
   files: DiffFile[]
-  comments: PullComment[]
+  threads: CommentThread[]
   mode: 'split' | 'unified'
   onComment: (draft: Omit<LineCommentDraft, 'itemId'>) => Promise<void>
+  onReply: (threadId: string, body: string) => Promise<void>
+  onResolve: (threadId: string, resolved: boolean) => Promise<void>
 }
 
-export function DiffView({ files, comments, mode, onComment }: DiffViewProps): React.JSX.Element {
+export function DiffView({
+  files,
+  threads,
+  mode,
+  onComment,
+  onReply,
+  onResolve,
+}: DiffViewProps): React.JSX.Element {
   const byPath = useMemo(() => {
-    const map = new Map<string, PullComment[]>()
-    for (const comment of comments) {
-      if (!comment.path || comment.line === undefined) continue
-      const list = map.get(comment.path) ?? []
-      list.push(comment)
-      map.set(comment.path, list)
+    const map = new Map<string, CommentThread[]>()
+    for (const thread of threads) {
+      if (!thread.path || thread.line === undefined) continue
+      const list = map.get(thread.path) ?? []
+      list.push(thread)
+      map.set(thread.path, list)
     }
     return map
-  }, [comments])
+  }, [threads])
 
   if (!files.length) {
     return (
@@ -70,9 +79,11 @@ export function DiffView({ files, comments, mode, onComment }: DiffViewProps): R
           key={`${file.oldPath}->${file.path}`}
           file={file}
           index={index}
-          comments={byPath.get(file.path) ?? NO_COMMENTS}
+          threads={byPath.get(file.path) ?? NO_THREADS}
           mode={mode}
           onComment={onComment}
+          onReply={onReply}
+          onResolve={onResolve}
         />
       ))}
     </div>
@@ -106,15 +117,19 @@ function useNearViewport(ref: RefObject<Element | null>, initial: boolean): bool
 function FileBlock({
   file,
   index,
-  comments,
+  threads,
   mode,
   onComment,
+  onReply,
+  onResolve,
 }: {
   file: DiffFile
   index: number
-  comments: PullComment[]
+  threads: CommentThread[]
   mode: 'split' | 'unified'
   onComment: DiffViewProps['onComment']
+  onReply: DiffViewProps['onReply']
+  onResolve: DiffViewProps['onResolve']
 }): React.JSX.Element {
   const hunks = useMemo(() => parsePatch(file.patch ?? ''), [file.patch])
   const lineCount = useMemo(
@@ -148,7 +163,7 @@ function FileBlock({
     // position by a pixel a time across a long diff.
     const height = rows.current?.getBoundingClientRect().height ?? 0
     if (height > 0) setMeasuredHeight((current) => (current === height ? current : height))
-  }, [rendered, mode, hunks, comments])
+  }, [rendered, mode, hunks, threads])
 
   const Icon =
     file.status === 'added'
@@ -204,19 +219,23 @@ function FileBlock({
                 <SplitHunks
                   hunks={hunks}
                   path={file.path}
-                  comments={comments}
+                  threads={threads}
                   target={target}
                   setTarget={setTarget}
                   onComment={onComment}
+                  onReply={onReply}
+                  onResolve={onResolve}
                 />
               ) : (
                 <UnifiedHunks
                   hunks={hunks}
                   path={file.path}
-                  comments={comments}
+                  threads={threads}
                   target={target}
                   setTarget={setTarget}
                   onComment={onComment}
+                  onReply={onReply}
+                  onResolve={onResolve}
                 />
               )}
             </div>
@@ -243,19 +262,23 @@ const CELL_BG: Record<string, string> = {
 interface HunkTableProps {
   hunks: DiffHunk[]
   path: string
-  comments: PullComment[]
+  threads: CommentThread[]
   target: CommentTarget | null
   setTarget: (target: CommentTarget | null) => void
   onComment: DiffViewProps['onComment']
+  onReply: DiffViewProps['onReply']
+  onResolve: DiffViewProps['onResolve']
 }
 
 function UnifiedHunks({
   hunks,
   path,
-  comments,
+  threads,
   target,
   setTarget,
   onComment,
+  onReply,
+  onResolve,
 }: HunkTableProps): React.JSX.Element {
   return (
     <table className="mono w-full border-collapse">
@@ -280,8 +303,8 @@ function UnifiedHunks({
                   </tr>
                 )
               }
-              const attached = comments.filter(
-                (comment) => comment.line === (line.newLine ?? line.oldLine),
+              const attached = threads.filter(
+                (thread) => thread.line === (line.newLine ?? line.oldLine),
               )
               const isTarget = target !== null && sameLine(target, line)
 
@@ -292,8 +315,14 @@ function UnifiedHunks({
                     <Gutter value={line.newLine} />
                     <Code line={line} />
                   </tr>
-                  {attached.map((comment) => (
-                    <CommentRow key={comment.id} comment={comment} span={3} />
+                  {attached.map((thread) => (
+                    <ThreadRow
+                      key={thread.id}
+                      thread={thread}
+                      span={3}
+                      onReply={onReply}
+                      onResolve={onResolve}
+                    />
                   ))}
                   {isTarget && (
                     <tr>
@@ -322,10 +351,12 @@ function UnifiedHunks({
 function SplitHunks({
   hunks,
   path,
-  comments,
+  threads,
   target,
   setTarget,
   onComment,
+  onReply,
+  onResolve,
 }: HunkTableProps): React.JSX.Element {
   return (
     <table className="mono w-full table-fixed border-collapse">
@@ -351,10 +382,10 @@ function SplitHunks({
               const right = row.right
               // A context line occupies both sides; the same object is reused.
               const paired = left === right
-              const attached = comments.filter(
-                (comment) =>
-                  (right && comment.line === right.newLine) ||
-                  (!right && left && comment.line === left.oldLine),
+              const attached = threads.filter(
+                (thread) =>
+                  (right && thread.line === right.newLine) ||
+                  (!right && left && thread.line === left.oldLine),
               )
               const activeSide =
                 target && ((right && target.newLine === right.newLine) || (left && target.oldLine === left.oldLine))
@@ -375,8 +406,14 @@ function SplitHunks({
                     />
                     <Code line={right} className={right && !paired ? 'bg-[var(--diff-add)]' : ''} />
                   </tr>
-                  {attached.map((comment) => (
-                    <CommentRow key={comment.id} comment={comment} span={4} />
+                  {attached.map((thread) => (
+                    <ThreadRow
+                      key={thread.id}
+                      thread={thread}
+                      span={4}
+                      onReply={onReply}
+                      onResolve={onResolve}
+                    />
                   ))}
                   {activeSide && target && (
                     <tr>
@@ -448,17 +485,21 @@ function Code({ line, className }: { line?: DiffLine; className?: string }): Rea
   )
 }
 
-function CommentRow({ comment, span }: { comment: PullComment; span: number }): React.JSX.Element {
+function ThreadRow({
+  thread,
+  span,
+  onReply,
+  onResolve,
+}: {
+  thread: CommentThread
+  span: number
+  onReply: DiffViewProps['onReply']
+  onResolve: DiffViewProps['onResolve']
+}): React.JSX.Element {
   return (
     <tr>
       <td colSpan={span} className="p-0">
-        <div className="glass-quiet m-1.5 flex gap-2 rounded-md px-2.5 py-2">
-          <Avatar src={comment.author.avatarUrl} name={comment.author.name} className="size-5" />
-          <div className="min-w-0 flex-1 font-sans">
-            <p className="text-[11.5px] font-semibold">{comment.author.name}</p>
-            <p className="mt-0.5 text-[12px] leading-snug whitespace-pre-wrap">{comment.body}</p>
-          </div>
-        </div>
+        <ThreadCard thread={thread} dense onReply={onReply} onResolve={onResolve} />
       </td>
     </tr>
   )

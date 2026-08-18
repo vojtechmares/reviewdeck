@@ -20,6 +20,8 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
   still waiting.
 - **A real diff viewer** - side by side or unified, with inline comments on any line and existing
   review comments anchored where they were left.
+- **Threaded conversations.** Replies sit under what they answer, and where the host supports it
+  you can reply and resolve without leaving the app.
 - **Descriptions and comments as Markdown**, GitHub-flavoured and rendered through a
   sanitizer, so collapsible bot reports, tables and checklists read the way their author
   meant them to.
@@ -109,6 +111,11 @@ Implement the `Provider` interface in `src/main/providers/types.ts` - connect, l
 requests, load a diff, refresh checks, submit a review, comment, comment on a line - and register
 it in `src/main/providers/index.ts`. Everything above that layer is provider-agnostic.
 
+Replying to a thread and resolving one are optional: leave them out on a host that cannot do
+them, and say so through each thread's capability flags. `src/main/providers/threads.ts` is
+where every host's comment shape becomes the one thread shape the renderer knows about, and it
+takes no imports beyond types so it stays reachable from the test suite.
+
 ### Notes on the provider APIs
 
 Each host makes a different part of this hard:
@@ -140,7 +147,9 @@ This is an MVP.
 - macOS only.
 - Bitbucket Server (the self-hosted one) uses a different API and is not supported; Bitbucket Cloud is.
 - Diffs are not syntax highlighted.
-- Line comments start a new thread; replying to an existing thread happens in the browser.
+- Replying to a thread and resolving one work on GitLab. On GitHub, Forgejo and Bitbucket every
+  comment still arrives as a thread of its own, with no reply or resolve offered - GitHub's
+  review threads and their resolution live only in its GraphQL API.
 
 Features are implemented here rather than pulled in, with one standing exception: parsing
 and rendering content that other people wrote. Markdown goes through `react-markdown`,

@@ -256,6 +256,7 @@ index 2b4c5d6..9e8f7a1 100644
 `
 
 export function demoDetail(item: ReviewItem): PullDetail {
+  const threaded = item.provider === 'gitlab'
   return {
     item,
     description:
@@ -264,27 +265,62 @@ export function demoDetail(item: ReviewItem): PullDetail {
       'failures with a capped exponential backoff and only gives up on a permanent error.\n\n' +
       'Closes ACME-2214.',
     files: parseUnifiedDiff(DEMO_DIFF),
-    comments: [
+    // Only GitLab can reply and resolve so far, so the fixture mirrors that: on any
+    // other host the same conversation arrives as threads with no affordances.
+    threads: [
       {
-        id: 'c1',
-        author: { name: 'mnovotna', avatarUrl: '' },
-        body: 'Nice - can we get the max elapsed time into config rather than hard-coding 20s?',
-        createdAt: minutesAgo(40),
+        id: 't1',
+        resolved: false,
+        outdated: false,
+        canReply: threaded,
+        canResolve: threaded,
+        comments: [
+          {
+            id: 'c1',
+            author: { name: 'mnovotna', avatarUrl: '' },
+            body: 'Nice - can we get the max elapsed time into config rather than hard-coding 20s?',
+            createdAt: minutesAgo(40),
+          },
+          {
+            id: 'c2',
+            author: { name: 'hkramer', avatarUrl: '' },
+            body: 'Good call, will do in a follow-up so this can ship today.',
+            createdAt: minutesAgo(25),
+          },
+        ],
       },
       {
-        id: 'c2',
-        author: { name: 'hkramer', avatarUrl: '' },
-        body: 'Good call, will do in a follow-up so this can ship today.',
-        createdAt: minutesAgo(25),
+        id: 't2',
+        resolved: threaded,
+        outdated: false,
+        canReply: threaded,
+        canResolve: threaded,
+        comments: [
+          {
+            id: 'c3',
+            author: { name: 'hkramer', avatarUrl: '' },
+            body: 'Rebased onto main - the flaky integration test was unrelated.',
+            createdAt: minutesAgo(30),
+          },
+        ],
       },
       {
-        id: 'c3',
-        author: { name: 'mnovotna', avatarUrl: '' },
-        body: 'backoff.Permanent already unwraps, so this branch reads a little redundant - but harmless.',
-        createdAt: minutesAgo(20),
+        id: 't3',
+        resolved: false,
+        outdated: false,
+        canReply: threaded,
+        canResolve: threaded,
         path: 'internal/payments/capture.go',
         line: 55,
         side: 'new',
+        comments: [
+          {
+            id: 'c4',
+            author: { name: 'mnovotna', avatarUrl: '' },
+            body: 'backoff.Permanent already unwraps, so this branch reads a little redundant - but harmless.',
+            createdAt: minutesAgo(20),
+          },
+        ],
       },
     ],
     refs: { baseSha: 'a'.repeat(40), startSha: 'a'.repeat(40), headSha: 'b'.repeat(40) },

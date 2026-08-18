@@ -9,6 +9,7 @@
 
 import { request, toOrigin } from '../http.ts'
 import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
+import { bitbucketThreads, type BitbucketComment } from './threads.ts'
 import { parseUnifiedDiff } from '@shared/diff.ts'
 import type {
   Account,
@@ -17,7 +18,6 @@ import type {
   CheckStatus,
   CheckSummary,
   MyReviewState,
-  PullComment,
   ReviewItem,
 } from '@shared/types.ts'
 
@@ -80,15 +80,6 @@ interface BbStatus {
   state: string
   url: string
   description: string
-}
-
-interface BbComment {
-  id: number
-  user: BbUser
-  content: { raw: string }
-  created_on: string
-  deleted?: boolean
-  inline?: { path: string; to?: number | null; from?: number | null }
 }
 
 function headers(session: Session): Record<string, string> {
@@ -261,12 +252,12 @@ export const bitbucket: Provider = {
         raw: true,
         signal,
       }).catch(() => ''),
-      collect<BbComment>(
+      collect<BitbucketComment>(
         `${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}/comments?pagelen=50`,
         session,
         100,
         signal,
-      ).catch(() => [] as BbComment[]),
+      ).catch(() => [] as BitbucketComment[]),
     ])
 
     const files = parseUnifiedDiff(diff)
@@ -275,23 +266,11 @@ export const bitbucket: Provider = {
       { a: 0, d: 0 },
     )
 
-    const mapped: PullComment[] = comments
-      .filter((comment) => !comment.deleted)
-      .map((comment) => ({
-        id: String(comment.id),
-        author: { name: comment.user?.display_name ?? 'unknown', avatarUrl: avatar(comment.user) },
-        body: comment.content?.raw ?? '',
-        createdAt: comment.created_on,
-        path: comment.inline?.path,
-        line: comment.inline?.to ?? comment.inline?.from ?? undefined,
-        side: comment.inline ? (comment.inline.to ? 'new' : 'old') : undefined,
-      }))
-
     return {
       item: { ...item, additions: totals.a, deletions: totals.d, changedFiles: files.length },
       description: pr.description ?? '',
       files,
-      comments: mapped,
+      threads: bitbucketThreads(comments),
       refs: { headSha: pr.source?.commit?.hash, baseSha: pr.destination?.commit?.hash },
     }
   },

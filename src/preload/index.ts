@@ -47,6 +47,10 @@ const api = {
       ipcRenderer.invoke('pull:comment', itemId, body),
     lineComment: (draft: LineCommentDraft, refs: DiffRefs): Promise<void> =>
       ipcRenderer.invoke('pull:lineComment', draft, refs),
+    replyToThread: (itemId: string, threadId: string, body: string): Promise<void> =>
+      ipcRenderer.invoke('pull:replyToThread', itemId, threadId, body),
+    resolveThread: (itemId: string, threadId: string, resolved: boolean): Promise<void> =>
+      ipcRenderer.invoke('pull:resolveThread', itemId, threadId, resolved),
   },
   settings: {
     get: (): Promise<Settings> => ipcRenderer.invoke('settings:get'),

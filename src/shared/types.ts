@@ -112,17 +112,37 @@ export interface PullComment {
   author: User
   body: string
   createdAt: string
-  /** Present for inline comments. */
+}
+
+/**
+ * One conversation: an opening comment and the replies under it, or a lone note on
+ * a host that gives comments no thread structure at all.
+ *
+ * The two capability flags are per thread, not per provider - GitHub can reply to a
+ * review thread and cannot reply to an ordinary issue comment - and they are the
+ * only thing the renderer goes by. It never branches on which host it is talking to;
+ * every difference is absorbed in the adapter.
+ */
+export interface CommentThread {
+  id: string
+  /** Oldest first. The first is the comment a reply would land under. */
+  comments: PullComment[]
+  resolved: boolean
+  /** The thread is anchored to a version of the diff that has since moved on. */
+  outdated: boolean
+  /** Present for inline threads. */
   path?: string
   line?: number
   side?: 'old' | 'new'
+  canReply: boolean
+  canResolve: boolean
 }
 
 export interface PullDetail {
   item: ReviewItem
   description: string
   files: DiffFile[]
-  comments: PullComment[]
+  threads: CommentThread[]
   refs: DiffRefs
 }
 

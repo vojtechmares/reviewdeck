@@ -15,6 +15,7 @@ import {
   setToken,
   updateAccount,
 } from './store.ts'
+import { PROVIDER_LABELS } from '@shared/types.ts'
 import type {
   Account,
   AccountDraft,
@@ -138,6 +139,43 @@ export function registerIpc(): void {
       fail(error)
     }
   })
+
+  ipcMain.handle(
+    'pull:replyToThread',
+    async (_event, itemId: string, threadId: string, body: string) => {
+      try {
+        const item = deck.find(itemId)
+        if (!item) throw new Error('That pull request is no longer in the deck.')
+        if (!body.trim()) throw new Error('The reply is empty.')
+        const provider = providerFor(item.provider)
+        // The renderer only offers this where the thread says it can, so reaching
+        // here without support is a bug rather than something the user did.
+        if (!provider.replyToThread) {
+          throw new Error(`${PROVIDER_LABELS[item.provider]} cannot reply to a thread from here.`)
+        }
+        await provider.replyToThread(deck.session(item.accountId), item, threadId, body)
+      } catch (error) {
+        fail(error)
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'pull:resolveThread',
+    async (_event, itemId: string, threadId: string, resolved: boolean) => {
+      try {
+        const item = deck.find(itemId)
+        if (!item) throw new Error('That pull request is no longer in the deck.')
+        const provider = providerFor(item.provider)
+        if (!provider.setThreadResolved) {
+          throw new Error(`${PROVIDER_LABELS[item.provider]} cannot resolve a thread from here.`)
+        }
+        await provider.setThreadResolved(deck.session(item.accountId), item, threadId, resolved)
+      } catch (error) {
+        fail(error)
+      }
+    },
+  )
 
   ipcMain.handle(
     'pull:lineComment',

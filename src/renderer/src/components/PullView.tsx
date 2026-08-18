@@ -25,6 +25,7 @@ import { ChecksPanel } from './ChecksPanel'
 import { DiffView } from './DiffView'
 import { Markdown } from './Markdown'
 import { ProviderIcon } from './ProviderIcon'
+import { ThreadCard } from './Thread'
 
 type Tab = 'diff' | 'checks' | 'conversation'
 
@@ -68,10 +69,10 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
   }, [item.id])
 
   const conversation = useMemo(
-    () => (detail?.comments ?? []).filter((comment) => !comment.path),
+    () => (detail?.threads ?? []).filter((thread) => !thread.path),
     [detail],
   )
-  const inlineCount = (detail?.comments.length ?? 0) - conversation.length
+  const inlineCount = (detail?.threads.length ?? 0) - conversation.length
 
   const openExternal = useCallback((url: string) => {
     void window.reviewdeck.app.openExternal(url)
@@ -91,6 +92,34 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
       }
     },
     [detail, item.id, toast],
+  )
+
+  const replyToThread = useCallback(
+    async (threadId: string, body: string) => {
+      try {
+        await window.reviewdeck.pull.replyToThread(item.id, threadId, body)
+        toast.ok('Reply posted.')
+        setDetail(await window.reviewdeck.pull.detail(item.id))
+      } catch (cause) {
+        toast.bad(errorMessage(cause))
+        throw cause
+      }
+    },
+    [item.id, toast],
+  )
+
+  const resolveThread = useCallback(
+    async (threadId: string, resolved: boolean) => {
+      try {
+        await window.reviewdeck.pull.resolveThread(item.id, threadId, resolved)
+        toast.ok(resolved ? 'Thread resolved.' : 'Thread reopened.')
+        setDetail(await window.reviewdeck.pull.detail(item.id))
+      } catch (cause) {
+        toast.bad(errorMessage(cause))
+        throw cause
+      }
+    },
+    [item.id, toast],
   )
 
   const submit = useCallback(async () => {
@@ -228,9 +257,11 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
             {tab === 'diff' && (
               <DiffView
                 files={detail.files}
-                comments={detail.comments}
+                threads={detail.threads}
                 mode={settings.diffView}
                 onComment={addLineComment}
+                onReply={replyToThread}
+                onResolve={resolveThread}
               />
             )}
             {tab === 'checks' && <ChecksPanel checks={item.checks} onOpen={openExternal} />}
@@ -245,19 +276,13 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
                   </article>
                 )}
 
-                {conversation.map((comment) => (
-                  <article key={comment.id} className="glass flex gap-2.5 rounded-lg p-3">
-                    <Avatar src={comment.author.avatarUrl} name={comment.author.name} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[12px]">
-                        <span className="font-semibold">{comment.author.name}</span>{' '}
-                        <span className="text-muted-foreground">
-                          {relativeTime(comment.createdAt)}
-                        </span>
-                      </p>
-                      <Markdown className="mt-1">{comment.body}</Markdown>
-                    </div>
-                  </article>
+                {conversation.map((thread) => (
+                  <ThreadCard
+                    key={thread.id}
+                    thread={thread}
+                    onReply={replyToThread}
+                    onResolve={resolveThread}
+                  />
                 ))}
 
                 {!conversation.length && !detail.description.trim() && (
@@ -268,7 +293,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
 
                 {inlineCount > 0 && (
                   <p className="text-center text-[11.5px] text-muted-foreground">
-                    {inlineCount} inline comment{inlineCount === 1 ? '' : 's'} shown on the Files tab.
+                    {inlineCount} inline thread{inlineCount === 1 ? '' : 's'} shown on the Files tab.
                   </p>
                 )}
               </div>

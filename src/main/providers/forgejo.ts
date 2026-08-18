@@ -7,6 +7,7 @@
 
 import { request, toOrigin } from '../http.ts'
 import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
+import { forgejoThreads, type ForgejoComment } from './threads.ts'
 import { parseUnifiedDiff } from '@shared/diff.ts'
 import type {
   Account,
@@ -15,7 +16,6 @@ import type {
   CheckStatus,
   CheckSummary,
   MyReviewState,
-  PullComment,
   ReviewItem,
 } from '@shared/types.ts'
 
@@ -71,13 +71,6 @@ interface FjReview {
   user: FjUser
   body: string
   submitted_at: string
-}
-
-interface FjComment {
-  id: number
-  user: FjUser
-  body: string
-  created_at: string
 }
 
 interface FjStatus {
@@ -259,10 +252,10 @@ export const forgejo: Provider = {
         raw: true,
         signal,
       }).catch(() => ''),
-      request<FjComment[]>(api(session, `/repos/${item.repoKey}/issues/${item.number}/comments`), {
+      request<ForgejoComment[]>(api(session, `/repos/${item.repoKey}/issues/${item.number}/comments`), {
         headers: headers(session),
         signal,
-      }).catch(() => [] as FjComment[]),
+      }).catch(() => [] as ForgejoComment[]),
     ])
 
     const files = parseUnifiedDiff(diff)
@@ -270,13 +263,6 @@ export const forgejo: Provider = {
       (acc, file) => ({ a: acc.a + file.additions, d: acc.d + file.deletions }),
       { a: 0, d: 0 },
     )
-
-    const mapped: PullComment[] = comments.map((comment) => ({
-      id: String(comment.id),
-      author: { name: comment.user?.login ?? 'unknown', avatarUrl: comment.user?.avatar_url ?? '' },
-      body: comment.body,
-      createdAt: comment.created_at,
-    }))
 
     return {
       item: {
@@ -287,7 +273,7 @@ export const forgejo: Provider = {
       },
       description: pull.body ?? '',
       files,
-      comments: mapped,
+      threads: forgejoThreads(comments),
       refs: { headSha: pull.head.sha, baseSha: pull.base.sha },
     }
   },

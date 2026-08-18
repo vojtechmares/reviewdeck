@@ -7,6 +7,7 @@
 
 import { ApiError, paginate, request, toOrigin } from '../http.ts'
 import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
+import { githubThreads, type GithubComment } from './threads.ts'
 import type {
   Account,
   AccountDraft,
@@ -15,7 +16,6 @@ import type {
   CheckSummary,
   DiffFile,
   MyReviewState,
-  PullComment,
   ReviewItem,
 } from '@shared/types.ts'
 
@@ -74,17 +74,6 @@ interface GhReview {
   user: GhUser
   body: string
   submitted_at: string
-}
-
-interface GhComment {
-  id: number
-  user: GhUser
-  body: string
-  created_at: string
-  path?: string
-  line?: number | null
-  original_line?: number | null
-  side?: string
 }
 
 interface GhCheckRun {
@@ -311,14 +300,14 @@ export const github: Provider = {
         { headers: headers(session), signal },
         4,
       ),
-      request<GhComment[]>(
+      request<GithubComment[]>(
         api(session, `/repos/${item.repoKey}/issues/${item.number}/comments?per_page=100`),
         { headers: headers(session), signal },
-      ).catch(() => [] as GhComment[]),
-      request<GhComment[]>(
+      ).catch(() => [] as GithubComment[]),
+      request<GithubComment[]>(
         api(session, `/repos/${item.repoKey}/pulls/${item.number}/comments?per_page=100`),
         { headers: headers(session), signal },
-      ).catch(() => [] as GhComment[]),
+      ).catch(() => [] as GithubComment[]),
     ])
 
     const files: DiffFile[] = rawFiles.map((file) => ({
@@ -331,16 +320,11 @@ export const github: Provider = {
       binary: !file.patch && file.additions === 0 && file.deletions === 0,
     }))
 
-    const comments: PullComment[] = [
-      ...issueComments.map((comment) => toComment(comment)),
-      ...reviewComments.map((comment) => toComment(comment)),
-    ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-
     return {
       item: { ...item, additions: pull.additions, deletions: pull.deletions, changedFiles: pull.changed_files },
       description: pull.body ?? '',
       files,
-      comments,
+      threads: githubThreads(issueComments, reviewComments),
       refs: { headSha: pull.head.sha, baseSha: pull.base.sha },
     }
   },
@@ -386,19 +370,6 @@ export const github: Provider = {
       },
     })
   },
-}
-
-function toComment(comment: GhComment): PullComment {
-  const line = comment.line ?? comment.original_line ?? undefined
-  return {
-    id: String(comment.id),
-    author: { name: comment.user?.login ?? 'unknown', avatarUrl: comment.user?.avatar_url ?? '' },
-    body: comment.body,
-    createdAt: comment.created_at,
-    path: comment.path,
-    line: line ?? undefined,
-    side: comment.side === 'LEFT' ? 'old' : comment.path ? 'new' : undefined,
-  }
 }
 
 function emptyChecks(): CheckSummary {

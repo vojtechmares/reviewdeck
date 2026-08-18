@@ -27,6 +27,18 @@ export interface Provider {
   submitReview(session: Session, item: ReviewItem, verdict: ReviewVerdict, body: string): Promise<void>
   addComment(session: Session, item: ReviewItem, body: string): Promise<void>
   addLineComment(session: Session, item: ReviewItem, draft: LineCommentDraft, refs: PullDetail['refs']): Promise<void>
+  /**
+   * Reply into an existing thread. Absent on a host that cannot do it - support is
+   * expressed through each thread's `canReply` flag, not by throwing.
+   */
+  replyToThread?(session: Session, item: ReviewItem, threadId: string, body: string): Promise<void>
+  /** Resolve or reopen a thread. Absent on a host that cannot do it, as above. */
+  setThreadResolved?(
+    session: Session,
+    item: ReviewItem,
+    threadId: string,
+    resolved: boolean,
+  ): Promise<void>
 }
 
 /** Collapse a set of individual check states into the one badge the deck shows. */

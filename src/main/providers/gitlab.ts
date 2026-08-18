@@ -7,6 +7,7 @@
 
 import { request, toOrigin } from '../http.ts'
 import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
+import { gitlabThreads, type GitlabDiscussion } from './threads.ts'
 import { countChanges } from '@shared/diff.ts'
 import type {
   Account,
@@ -16,7 +17,6 @@ import type {
   CheckSummary,
   DiffFile,
   MyReviewState,
-  PullComment,
   ReviewItem,
 } from '@shared/types.ts'
 
@@ -79,21 +79,6 @@ interface GlJob {
   web_url: string
   stage: string
   allow_failure: boolean
-}
-
-interface GlNote {
-  id: number
-  body: string
-  author: GlUser
-  created_at: string
-  system: boolean
-  type: string | null
-  position?: {
-    new_path?: string
-    old_path?: string
-    new_line?: number | null
-    old_line?: number | null
-  } | null
 }
 
 interface GlApproval {
@@ -257,7 +242,7 @@ export const gitlab: Provider = {
   },
 
   async loadDetail(session, item, signal) {
-    const [mr, changes, versions, notes] = await Promise.all([
+    const [mr, changes, versions, discussions] = await Promise.all([
       request<GlMergeRequest>(api(session, `/projects/${project(item)}/merge_requests/${item.number}`), {
         headers: headers(session),
         signal,
@@ -270,10 +255,10 @@ export const gitlab: Provider = {
         api(session, `/projects/${project(item)}/merge_requests/${item.number}/versions`),
         { headers: headers(session), signal },
       ).catch(() => [] as GlVersion[]),
-      request<GlNote[]>(
-        api(session, `/projects/${project(item)}/merge_requests/${item.number}/notes?per_page=100&sort=asc`),
+      request<GitlabDiscussion[]>(
+        api(session, `/projects/${project(item)}/merge_requests/${item.number}/discussions?per_page=100`),
         { headers: headers(session), signal },
-      ).catch(() => [] as GlNote[]),
+      ).catch(() => [] as GitlabDiscussion[]),
     ])
 
     const rawDiffs = changes.changes ?? changes.diffs ?? []
@@ -291,19 +276,9 @@ export const gitlab: Provider = {
       }
     })
 
-    const comments: PullComment[] = notes
-      .filter((note) => !note.system)
-      .map((note) => ({
-        id: String(note.id),
-        author: { name: note.author?.username ?? 'unknown', avatarUrl: note.author?.avatar_url ?? '' },
-        body: note.body,
-        createdAt: note.created_at,
-        path: note.position?.new_path ?? note.position?.old_path,
-        line: note.position?.new_line ?? note.position?.old_line ?? undefined,
-        side: note.position?.new_line ? 'new' : note.position?.old_line ? 'old' : undefined,
-      }))
-
     const version = versions[0]
+    const threads = gitlabThreads(discussions, version?.head_commit_sha ?? mr.sha)
+
     const totals = files.reduce(
       (acc, file) => ({ a: acc.a + file.additions, d: acc.d + file.deletions }),
       { a: 0, d: 0 },
@@ -313,7 +288,7 @@ export const gitlab: Provider = {
       item: { ...item, additions: totals.a, deletions: totals.d, changedFiles: files.length },
       description: mr.description ?? '',
       files,
-      comments,
+      threads,
       refs: version
         ? { baseSha: version.base_commit_sha, startSha: version.start_commit_sha, headSha: version.head_commit_sha }
         : { headSha: mr.sha },
@@ -352,6 +327,26 @@ export const gitlab: Provider = {
       headers: headers(session),
       body: { body },
     })
+  },
+
+  async replyToThread(session, item, threadId, body) {
+    await request(
+      api(
+        session,
+        `/projects/${project(item)}/merge_requests/${item.number}/discussions/${encodeURIComponent(threadId)}/notes`,
+      ),
+      { method: 'POST', headers: headers(session), body: { body } },
+    )
+  },
+
+  async setThreadResolved(session, item, threadId, resolved) {
+    await request(
+      api(
+        session,
+        `/projects/${project(item)}/merge_requests/${item.number}/discussions/${encodeURIComponent(threadId)}`,
+      ),
+      { method: 'PUT', headers: headers(session), body: { resolved } },
+    )
   },
 
   async addLineComment(session, item, draft, refs) {
