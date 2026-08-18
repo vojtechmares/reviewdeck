@@ -22,6 +22,8 @@ const api = {
     remove: (id: string): Promise<Account[]> => ipcRenderer.invoke('accounts:remove', id),
     rename: (id: string, label: string): Promise<Account[]> =>
       ipcRenderer.invoke('accounts:rename', id, label),
+    update: (id: string, draft: AccountDraft): Promise<Account> =>
+      ipcRenderer.invoke('accounts:update', id, draft),
   },
   deck: {
     get: (): Promise<DeckState> => ipcRenderer.invoke('deck:get'),

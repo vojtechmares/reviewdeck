@@ -6,10 +6,13 @@ import { DEMO_ACCOUNTS, demoDetail, demoEnabled } from './demo.ts'
 import { providerFor } from './providers/index.ts'
 import {
   addAccount,
+  getAccount,
   getSettings,
+  getToken,
   listAccounts,
   removeAccount,
   saveSettings,
+  setToken,
   updateAccount,
 } from './store.ts'
 import type {
@@ -53,6 +56,28 @@ export function registerIpc(): void {
     updateAccount(id, { label })
     deck.publish()
     return listAccounts()
+  })
+
+  ipcMain.handle('accounts:update', async (_event, id: string, draft: AccountDraft): Promise<Account> => {
+    try {
+      const existing = getAccount(id)
+      if (!existing) throw new Error('That account is gone.')
+      const token = draft.token?.trim() || getToken(id)
+      if (!token) throw new Error('A token is required.')
+      const resolved = await providerFor(existing.kind).connect({
+        ...draft,
+        kind: existing.kind,
+        token,
+      })
+      updateAccount(id, { ...resolved, label: draft.label.trim() || existing.label })
+      if (draft.token?.trim()) setToken(id, draft.token.trim())
+      void deck.refresh()
+      const updated = getAccount(id)
+      if (!updated) throw new Error('That account is gone.')
+      return updated
+    } catch (error) {
+      fail(error)
+    }
   })
 
   ipcMain.handle('deck:get', () => deck.state())

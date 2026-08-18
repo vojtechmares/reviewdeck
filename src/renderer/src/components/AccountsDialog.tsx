@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { AlertTriangle, ExternalLink, Loader2, Plus, Trash2 } from 'lucide-react'
-import { PROVIDER_LABELS, type AccountDraft, type ProviderKind } from '@shared/types'
+import { AlertTriangle, ExternalLink, Loader2, Pencil, Plus, Trash2 } from 'lucide-react'
+import { PROVIDER_LABELS, type Account, type AccountDraft, type ProviderKind } from '@shared/types'
+import { tokenCreateUrl } from '@shared/token-url'
 import { errorMessage, useApp } from '@/hooks/useApp'
 import { Avatar } from './ui/avatar'
 import { Button } from './ui/button'
@@ -14,29 +15,25 @@ import { ProviderIcon } from './ProviderIcon'
  * a freelancer runs into (self-hosted GitLab, a company Forgejo) can mint one,
  * whereas OAuth would need an app registered on each instance up front.
  */
-const GUIDES: Record<ProviderKind, { host: string; scopes: string; url: string; hostHint: string }> = {
+const GUIDES: Record<ProviderKind, { host: string; scopes: string; hostHint: string }> = {
   github: {
     host: 'github.com',
     scopes: 'repo, read:org',
-    url: 'https://github.com/settings/tokens/new?scopes=repo,read:org&description=Reviewdeck',
     hostHint: 'Use your Enterprise Server hostname for GHES, e.g. github.acme.com',
   },
   gitlab: {
     host: 'gitlab.com',
     scopes: 'api',
-    url: 'https://gitlab.com/-/user_settings/personal_access_tokens',
     hostHint: 'Self-hosted works too, e.g. gitlab.acme.com',
   },
   forgejo: {
     host: 'codeberg.org',
-    scopes: 'read:user, read:repository, write:issue, write:repository',
-    url: 'https://codeberg.org/user/settings/applications',
+    scopes: 'issue: Read and write · repository: Read and write · user: Read',
     hostHint: 'Any Forgejo or Gitea instance',
   },
   bitbucket: {
     host: 'bitbucket.org',
     scopes: 'Account: Read · Pull requests: Write',
-    url: 'https://bitbucket.org/account/settings/app-passwords/new',
     hostHint: 'Bitbucket Cloud only',
   },
 }
@@ -52,6 +49,7 @@ export function AccountsDialog({
   const toast = useToast()
 
   const [adding, setAdding] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [kind, setKind] = useState<ProviderKind>('github')
   const [host, setHost] = useState(GUIDES.github.host)
@@ -60,27 +58,43 @@ export function AccountsDialog({
   const [token, setToken] = useState('')
 
   const guide = GUIDES[kind]
+  const formOpen = adding || editingId !== null
+  const canSave = Boolean(token.trim() || editingId)
 
   const reset = (): void => {
     setAdding(false)
+    setEditingId(null)
     setToken('')
     setLabel('')
     setUsername('')
   }
 
   const pickKind = (next: ProviderKind): void => {
+    if (editingId) return
     setKind(next)
     setHost(GUIDES[next].host)
   }
 
+  const startEdit = (account: Account): void => {
+    setAdding(false)
+    setEditingId(account.id)
+    setKind(account.kind)
+    setHost(hostOf(account))
+    setLabel(account.label)
+    setUsername(account.kind === 'bitbucket' ? account.username : '')
+    setToken('')
+  }
+
   const save = async (): Promise<void> => {
-    if (busy) return
+    if (busy || !canSave) return
     setBusy(true)
     try {
       const draft: AccountDraft = { kind, host, label: label.trim(), token: token.trim(), username: username.trim() }
-      const account = await window.reviewdeck.accounts.add(draft)
+      const account = editingId
+        ? await window.reviewdeck.accounts.update(editingId, draft)
+        : await window.reviewdeck.accounts.add(draft)
       await reloadAccounts()
-      toast.ok(`Signed in as ${account.displayName}.`)
+      toast.ok(editingId ? `Updated ${account.label}.` : `Signed in as ${account.displayName}.`)
       reset()
     } catch (cause) {
       toast.bad(errorMessage(cause))
@@ -103,25 +117,32 @@ export function AccountsDialog({
       description="Connect every host you review on. Tokens are encrypted with your macOS keychain."
       className="max-w-xl"
       footer={
-        adding ? (
+        formOpen ? (
           <>
             <Button variant="ghost" onClick={reset} disabled={busy}>
               Cancel
             </Button>
-            <Button variant="default" onClick={() => void save()} disabled={busy || !token.trim()}>
+            <Button variant="default" onClick={() => void save()} disabled={busy || !canSave}>
               {busy && <Loader2 className="spin size-3.5" />}
-              {busy ? 'Verifying…' : 'Connect'}
+              {busy ? 'Verifying…' : editingId ? 'Save' : 'Connect'}
             </Button>
           </>
         ) : (
-          <Button variant="default" onClick={() => setAdding(true)}>
+          <Button
+            variant="default"
+            onClick={() => {
+              setKind('github')
+              setHost(GUIDES.github.host)
+              setAdding(true)
+            }}
+          >
             <Plus className="size-3.5" />
             Add account
           </Button>
         )
       }
     >
-      {!adding ? (
+      {!formOpen ? (
         <ul className="flex flex-col gap-2">
           {accounts.map((account) => {
             const status = deck.statuses.find((entry) => entry.accountId === account.id)
@@ -149,6 +170,14 @@ export function AccountsDialog({
                 <Button
                   variant="ghost"
                   size="icon"
+                  aria-label={`Edit ${account.label}`}
+                  onClick={() => startEdit(account)}
+                >
+                  <Pencil className="size-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
                   aria-label={`Remove ${account.label}`}
                   onClick={() => void remove(account.id, account.label)}
                 >
@@ -172,8 +201,10 @@ export function AccountsDialog({
               {(Object.keys(PROVIDER_LABELS) as ProviderKind[]).map((option) => (
                 <button
                   key={option}
+                  type="button"
+                  disabled={Boolean(editingId)}
                   onClick={() => pickKind(option)}
-                  className={cnKind(kind === option)}
+                  className={cnKind(kind === option, Boolean(editingId))}
                 >
                   <ProviderIcon kind={option} className="size-4" />
                   {PROVIDER_LABELS[option]}
@@ -220,18 +251,18 @@ export function AccountsDialog({
               type="password"
               value={token}
               onChange={(event) => setToken(event.target.value)}
-              placeholder="••••••••••••••••"
+              placeholder={editingId ? 'Leave blank to keep the current token' : '••••••••••••••••'}
               spellCheck={false}
               autoComplete="off"
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && token.trim()) void save()
+                if (event.key === 'Enter' && canSave) void save()
               }}
             />
             <p className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
               Needs <span className="mono !text-[10.5px]">{guide.scopes}</span>.
               <button
                 className="inline-flex items-center gap-0.5 text-info hover:underline"
-                onClick={() => void window.reviewdeck.app.openExternal(guide.url)}
+                onClick={() => void window.reviewdeck.app.openExternal(tokenCreateUrl(kind, host))}
               >
                 Create one
                 <ExternalLink className="size-2.5" />
@@ -254,9 +285,20 @@ export function AccountsDialog({
   )
 }
 
-function cnKind(active: boolean): string {
+function hostOf(account: Account): string {
+  try {
+    const url = new URL(account.webUrl)
+    const path = url.pathname.replace(/\/+$/, '')
+    return path && path !== '/' ? `${url.host}${path}` : url.host
+  } catch {
+    return GUIDES[account.kind].host
+  }
+}
+
+function cnKind(active: boolean, locked = false): string {
   return [
     'flex items-center gap-2 rounded-lg border px-3 py-2 text-[12.5px] font-medium transition-colors',
+    locked ? 'cursor-not-allowed opacity-70' : '',
     active
       ? 'border-border-strong bg-surface-strong'
       : 'border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
