@@ -20,6 +20,9 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
   still waiting.
 - **A real diff viewer** - side by side or unified, with inline comments on any line and existing
   review comments anchored where they were left.
+- **Descriptions and comments as Markdown**, GitHub-flavoured and rendered through a
+  sanitizer, so collapsible bot reports, tables and checklists read the way their author
+  meant them to.
 - **Approve or request changes** from the app, plus ordinary pull-request comments.
 - **CI status at a glance.** Passed / Running / Failed / Unknown per pull request, with the
   per-check breakdown, and a faster background poll while anything is still running.
@@ -51,7 +54,7 @@ pnpm dev            # development, with hot reload
 pnpm build          # typecheck + production bundle
 pnpm dist           # ad-hoc signed .dmg and .zip in release/
 pnpm dist:dir       # unpacked .app in release/mac-arm64/
-pnpm test           # unit tests for the diff parser and provider helpers
+pnpm test           # unit tests for the diff parser, the markdown pipeline and provider helpers
 pnpm icon           # regenerate resources/icon.icns
 ```
 
@@ -92,7 +95,7 @@ src/
 │   ├── ipc.ts            every channel the renderer may call
 │   └── providers/        one adapter per host, behind a single interface
 ├── preload/index.ts      the contextBridge surface - the only way in
-├── shared/               types and the diff parser, used by both sides
+├── shared/               types, the diff parser and the markdown pipeline, used by both sides
 └── renderer/src/         React UI
 ```
 
@@ -136,9 +139,15 @@ This is an MVP.
 
 - macOS only.
 - Bitbucket Server (the self-hosted one) uses a different API and is not supported; Bitbucket Cloud is.
-- Comment bodies render as plain text, not Markdown.
 - Diffs are not syntax highlighted.
 - Line comments start a new thread; replying to an existing thread happens in the browser.
+
+Features are implemented here rather than pulled in, with one standing exception: parsing
+and rendering content that other people wrote. Markdown goes through `react-markdown`,
+`remark-gfm`, `rehype-raw` and `rehype-sanitize`, because a hand-written markdown parser
+and HTML sanitizer standing between an untrusted pull request body and the app would be a
+liability rather than a saving. Raw HTML is sanitized, not stripped, and the sanitized
+tree becomes React elements - no HTML string is ever handed to the DOM.
 
 ## Releasing
 

@@ -23,6 +23,7 @@ import { useToast } from './ui/toast'
 import { CheckPill } from './CheckPill'
 import { ChecksPanel } from './ChecksPanel'
 import { DiffView } from './DiffView'
+import { Markdown } from './Markdown'
 import { ProviderIcon } from './ProviderIcon'
 
 type Tab = 'diff' | 'checks' | 'conversation'
@@ -240,9 +241,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
                     <p className="mb-1.5 text-[11.5px] font-semibold text-muted-foreground">
                       {item.author.name} wrote
                     </p>
-                    <p className="text-[13px] leading-relaxed whitespace-pre-wrap">
-                      {detail.description}
-                    </p>
+                    <Markdown>{detail.description}</Markdown>
                   </article>
                 )}
 
@@ -256,9 +255,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
                           {relativeTime(comment.createdAt)}
                         </span>
                       </p>
-                      <p className="mt-1 text-[13px] leading-relaxed whitespace-pre-wrap">
-                        {comment.body}
-                      </p>
+                      <Markdown className="mt-1">{comment.body}</Markdown>
                     </div>
                   </article>
                 ))}
