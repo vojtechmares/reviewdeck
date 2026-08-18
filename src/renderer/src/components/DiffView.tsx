@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { ChevronRight, FilePlus2, FileMinus2, FileSymlink, MessageSquarePlus, Plus } from 'lucide-react'
 import { parsePatch, toSplitRows, type DiffHunk, type DiffLine } from '@shared/diff'
 import type { DiffFile, LineCommentDraft, PullComment } from '@shared/types'
@@ -9,6 +9,26 @@ import { Textarea } from './ui/input'
 
 /** Files past this many lines start collapsed so opening a big PR stays instant. */
 const AUTO_COLLAPSE_LINES = 600
+
+/** How far outside the viewport a file section starts rendering its rows. */
+const WINDOW_MARGIN = '700px'
+
+/**
+ * Sections rendered without waiting for the observer, so opening a diff never
+ * flashes empty boxes where the first screenful should be.
+ */
+const EAGER_FILES = 2
+
+/**
+ * Row heights used to size a section that has never been on screen. Only a guess -
+ * a section is measured the first time it renders, and the measurement is what
+ * holds the scroll position from then on.
+ */
+const ESTIMATED_ROW_HEIGHT = 19
+const ESTIMATED_HUNK_HEADER_HEIGHT = 27
+
+/** Shared so a file without comments keeps the same array across renders. */
+const NO_COMMENTS: PullComment[] = []
 
 export interface CommentTarget {
   path: string
@@ -45,11 +65,12 @@ export function DiffView({ files, comments, mode, onComment }: DiffViewProps): R
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      {files.map((file) => (
+      {files.map((file, index) => (
         <FileBlock
           key={`${file.oldPath}->${file.path}`}
           file={file}
-          comments={byPath.get(file.path) ?? []}
+          index={index}
+          comments={byPath.get(file.path) ?? NO_COMMENTS}
           mode={mode}
           onComment={onComment}
         />
@@ -58,13 +79,39 @@ export function DiffView({ files, comments, mode, onComment }: DiffViewProps): R
   )
 }
 
+/**
+ * Whether an element is close enough to the viewport to be worth rendering.
+ *
+ * The observer accounts for the clipping the scroll container does, so watching
+ * the viewport is the same as watching the container - and saves threading a root
+ * reference down through the tree.
+ */
+function useNearViewport(ref: RefObject<Element | null>, initial: boolean): boolean {
+  const [near, setNear] = useState(initial)
+
+  useEffect(() => {
+    const element = ref.current
+    if (!element) return
+    const observer = new IntersectionObserver(
+      ([entry]) => setNear(entry.isIntersecting),
+      { rootMargin: `${WINDOW_MARGIN} 0px` },
+    )
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [ref])
+
+  return near
+}
+
 function FileBlock({
   file,
+  index,
   comments,
   mode,
   onComment,
 }: {
   file: DiffFile
+  index: number
   comments: PullComment[]
   mode: 'split' | 'unified'
   onComment: DiffViewProps['onComment']
@@ -76,6 +123,33 @@ function FileBlock({
   )
   const [open, setOpen] = useState(lineCount > 0 && lineCount <= AUTO_COLLAPSE_LINES)
 
+  // Lifted out of the hunk tables: an open composer is what keeps a section
+  // rendered, so a half-typed comment cannot be thrown away by a scroll.
+  const [target, setTarget] = useState<CommentTarget | null>(null)
+
+  const section = useRef<HTMLElement>(null)
+  const rows = useRef<HTMLDivElement>(null)
+  const [measuredHeight, setMeasuredHeight] = useState<number | null>(null)
+  const near = useNearViewport(section, index < EAGER_FILES)
+
+  // A binary file's one-line notice is not worth windowing.
+  const windowed = !file.binary && hunks.length > 0
+  const rendered = open && (!windowed || near || target !== null)
+
+  const estimatedHeight =
+    hunks.length * ESTIMATED_HUNK_HEADER_HEIGHT + lineCount * ESTIMATED_ROW_HEIGHT
+
+  // The two layouts are different heights, so a measurement does not carry over.
+  useLayoutEffect(() => setMeasuredHeight(null), [mode])
+
+  useLayoutEffect(() => {
+    if (!rendered) return
+    // Fractional, not offsetHeight: rounding every section would drift the scroll
+    // position by a pixel a time across a long diff.
+    const height = rows.current?.getBoundingClientRect().height ?? 0
+    if (height > 0) setMeasuredHeight((current) => (current === height ? current : height))
+  }, [rendered, mode, hunks, comments])
+
   const Icon =
     file.status === 'added'
       ? FilePlus2
@@ -86,7 +160,7 @@ function FileBlock({
           : null
 
   return (
-    <section className="glass overflow-hidden rounded-lg">
+    <section ref={section} className="glass overflow-hidden rounded-lg">
       <header className="flex items-center gap-2 px-2.5 py-2">
         <button
           onClick={() => setOpen((value) => !value)}
@@ -116,14 +190,36 @@ function FileBlock({
 
       {open && (
         <div className="border-t border-border">
-          {file.binary || !file.patch ? (
-            <p className="px-3 py-4 text-center text-[12px] text-muted-foreground">
-              {file.binary ? 'Binary file - no diff to show.' : 'No diff available for this file.'}
-            </p>
-          ) : mode === 'split' ? (
-            <SplitHunks hunks={hunks} path={file.path} comments={comments} onComment={onComment} />
+          {!rendered ? (
+            <div aria-hidden style={{ height: measuredHeight ?? estimatedHeight }} />
           ) : (
-            <UnifiedHunks hunks={hunks} path={file.path} comments={comments} onComment={onComment} />
+            <div ref={rows}>
+              {file.binary || !file.patch ? (
+                <p className="px-3 py-4 text-center text-[12px] text-muted-foreground">
+                  {file.binary
+                    ? 'Binary file - no diff to show.'
+                    : 'No diff available for this file.'}
+                </p>
+              ) : mode === 'split' ? (
+                <SplitHunks
+                  hunks={hunks}
+                  path={file.path}
+                  comments={comments}
+                  target={target}
+                  setTarget={setTarget}
+                  onComment={onComment}
+                />
+              ) : (
+                <UnifiedHunks
+                  hunks={hunks}
+                  path={file.path}
+                  comments={comments}
+                  target={target}
+                  setTarget={setTarget}
+                  onComment={onComment}
+                />
+              )}
+            </div>
           )}
         </div>
       )}
@@ -144,19 +240,23 @@ const CELL_BG: Record<string, string> = {
   meta: '',
 }
 
+interface HunkTableProps {
+  hunks: DiffHunk[]
+  path: string
+  comments: PullComment[]
+  target: CommentTarget | null
+  setTarget: (target: CommentTarget | null) => void
+  onComment: DiffViewProps['onComment']
+}
+
 function UnifiedHunks({
   hunks,
   path,
   comments,
+  target,
+  setTarget,
   onComment,
-}: {
-  hunks: DiffHunk[]
-  path: string
-  comments: PullComment[]
-  onComment: DiffViewProps['onComment']
-}): React.JSX.Element {
-  const [target, setTarget] = useState<CommentTarget | null>(null)
-
+}: HunkTableProps): React.JSX.Element {
   return (
     <table className="mono w-full border-collapse">
       <tbody>
@@ -223,15 +323,10 @@ function SplitHunks({
   hunks,
   path,
   comments,
+  target,
+  setTarget,
   onComment,
-}: {
-  hunks: DiffHunk[]
-  path: string
-  comments: PullComment[]
-  onComment: DiffViewProps['onComment']
-}): React.JSX.Element {
-  const [target, setTarget] = useState<CommentTarget | null>(null)
-
+}: HunkTableProps): React.JSX.Element {
   return (
     <table className="mono w-full table-fixed border-collapse">
       <colgroup>
