@@ -15,22 +15,54 @@
  * each rather than a bundle carrying every language against the chance.
  */
 
-import { createHighlighterCore, type HighlighterCore } from 'shiki/core'
+import {
+  createHighlighterCore,
+  type HighlighterCore,
+  type ThemedTokenExplanation,
+} from 'shiki/core'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
 import { bundledLanguages } from 'shiki/langs'
-import vitesseDark from 'shiki/themes/vitesse-dark.mjs'
-import vitesseLight from 'shiki/themes/vitesse-light.mjs'
+import githubDark from 'shiki/themes/github-dark-default.mjs'
+import githubLight from 'shiki/themes/github-light-default.mjs'
 import type { DiffHunk, DiffLine } from '@shared/diff'
-import { hunkTokens, languageFor, sideText } from '@shared/highlight'
+import {
+  backgroundFor,
+  backgroundRules,
+  hunkTokens,
+  languageFor,
+  paintsBackgrounds,
+  sideText,
+} from '@shared/highlight'
 
 /** One run of characters sharing a colour. */
 export interface Token {
   content: string
-  /** `--shiki-light` and `--shiki-dark`, so the theme toggle is pure CSS. */
+  /**
+   * `--shiki-light` and `--shiki-dark`, and the `-bg` pair for the few tokens a
+   * theme paints a background behind, so the theme toggle stays pure CSS.
+   */
   style?: Record<string, string>
 }
 
-const THEMES = { light: 'vitesse-light', dark: 'vitesse-dark' } as const
+/**
+ * The pair, chosen by measurement rather than taste: of fourteen matched light and
+ * dark themes, this is the only one whose every token colour clears 4.5:1 against
+ * the diff's own background - and 3:1 for the ones a theme mutes on purpose. It is
+ * louder than the graphite palette around it was aiming for. That is the price of
+ * `test/color.test.ts` asserting something rather than describing whatever the
+ * theme happened to do.
+ */
+const THEMES = { light: 'github-light-default', dark: 'github-dark-default' } as const
+
+/**
+ * The background-setting rules of each theme, against the custom property that
+ * carries them to the right side of the theme toggle. Flattened once: a patch asks
+ * this question of every token it produces.
+ */
+const BACKGROUND_RULES = [
+  { property: '--shiki-light-bg', rules: backgroundRules(githubLight.tokenColors) },
+  { property: '--shiki-dark-bg', rules: backgroundRules(githubDark.tokenColors) },
+]
 
 let pending: Promise<HighlighterCore> | null = null
 
@@ -38,7 +70,7 @@ function highlighter(): Promise<HighlighterCore> {
   // The two themes are the only thing loaded up front, because both are needed the
   // moment anything is highlighted at all.
   pending ??= createHighlighterCore({
-    themes: [vitesseLight, vitesseDark],
+    themes: [githubLight, githubDark],
     langs: [],
     engine: createJavaScriptRegexEngine({ forgiving: true }),
   })
@@ -107,16 +139,60 @@ function tokenize(
 ): Token[][] {
   const text = sideText(hunk, side)
   if (!text) return []
+  return toTokens(shiki, text, language)
+}
+
+/**
+ * Tokenizing, and the one place the extra question is asked.
+ *
+ * Asking every token which scopes it matched roughly doubles the cost, so it is
+ * asked only of the languages whose grammars can emit a scope a theme paints a
+ * background behind. Everything else takes the cheap path and carries colour alone.
+ */
+function toTokens(shiki: HighlighterCore, text: string, language: string): Token[][] {
+  const explained = paintsBackgrounds(language)
 
   const { tokens } = shiki.codeToTokens(text, {
     lang: language,
     themes: THEMES,
     defaultColor: false,
+    ...(explained ? { includeExplanation: 'scopeName' as const } : {}),
   })
 
   return tokens.map((line) =>
-    line.map((token) => ({ content: token.content, style: token.htmlStyle })),
+    line.map((token) => ({
+      content: token.content,
+      style: explained
+        ? { ...token.htmlStyle, ...tokenBackground(token.explanation) }
+        : token.htmlStyle,
+    })),
   )
+}
+
+/**
+ * The custom properties that paint a token's own background, for the few tokens
+ * that have one.
+ *
+ * A token can span several explanation ranges, and is only merged into one when its
+ * style is the same throughout - so the background is painted only where every
+ * range agrees on it, and a disagreement leaves the row showing through rather than
+ * guessing which half was right.
+ */
+function tokenBackground(explanation?: ThemedTokenExplanation[]): Record<string, string> {
+  if (!explanation?.length) return {}
+
+  const style: Record<string, string> = {}
+  for (const { property, rules } of BACKGROUND_RULES) {
+    const resolved = explanation.map((range) =>
+      backgroundFor(
+        rules,
+        range.scopes.map((scope) => scope.scopeName),
+      ),
+    )
+    const [first] = resolved
+    if (first && resolved.every((background) => background === first)) style[property] = first
+  }
+  return style
 }
 
 /**
@@ -155,14 +231,7 @@ export async function highlightCode(code: string, tag: string): Promise<Token[][
     const shiki = await highlighter()
     if (!(await loadGrammar(shiki, language))) return null
 
-    const { tokens } = shiki.codeToTokens(code, {
-      lang: language,
-      themes: THEMES,
-      defaultColor: false,
-    })
-    return tokens.map((line) =>
-      line.map((token) => ({ content: token.content, style: token.htmlStyle })),
-    )
+    return toTokens(shiki, code, language)
   } catch {
     return null
   }

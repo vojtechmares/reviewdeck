@@ -67,6 +67,85 @@ export function hunkTokens<T>(hunk: DiffHunk, oldSide: T[][], newSide: T[][]): M
 }
 
 /**
+ * The scopes a theme paints a background behind, and which languages can produce
+ * them.
+ *
+ * Shiki emits foregrounds only - `codeToTokens` carries no background in any mode,
+ * dual-theme or single - so the handful of theme rules that set one render with a
+ * foreground chosen for a background nothing paints. In `github-dark-default` the
+ * carriage-return marker is `#f0f6fc` on `#ff7b72`; without the red behind it, it
+ * is white text on the code column.
+ *
+ * Recovering it from the foreground does not work: three of the five backgrounds in
+ * each theme share their foreground with rules that set none, so `#116329` is
+ * `markup.inserted` and also `entity.name.tag`, and keying off the colour paints
+ * green behind every JSX tag name. The scopes a token actually matched are the only
+ * sound key, and asking for them costs roughly double, which is why it is asked for
+ * by language rather than always.
+ */
+
+/** One theme rule that sets a background, flattened to a single scope selector. */
+export interface BackgroundRule {
+  selector: string
+  background: string
+}
+
+/** A token colour rule, in the shape a theme's JSON carries it. */
+export interface ThemeTokenRule {
+  scope?: string | string[]
+  settings?: { foreground?: string; background?: string }
+}
+
+/**
+ * Languages whose grammars can emit those scopes at all.
+ *
+ * `markup.*` and `carriage-return` come from the diff and markdown grammars and
+ * nowhere else, and the diff view tokenizes each side with the *file's own*
+ * language rather than with the `diff` grammar - so a reviewed `.ts` file cannot
+ * produce them however it is spelled. What is left is a reviewed patch or markdown
+ * file, and a fenced block tagged as one.
+ */
+const BACKGROUND_LANGUAGES = new Set(['diff', 'markdown', 'mdx'])
+
+/** Whether tokens of this language are worth asking the extra question about. */
+export function paintsBackgrounds(language: string): boolean {
+  return BACKGROUND_LANGUAGES.has(language)
+}
+
+/** A theme's background-setting rules, one entry per scope selector. */
+export function backgroundRules(tokenColors: ThemeTokenRule[] | undefined): BackgroundRule[] {
+  const rules: BackgroundRule[] = []
+  for (const rule of tokenColors ?? []) {
+    const background = rule.settings?.background
+    if (!background) continue
+    const scopes = typeof rule.scope === 'string' ? [rule.scope] : (rule.scope ?? [])
+    for (const selector of scopes) rules.push({ selector, background })
+  }
+  return rules
+}
+
+/**
+ * The background a token's matched scopes call for, or nothing - which is what
+ * almost every token gets.
+ *
+ * Matching is TextMate's: a selector matches a scope it is a dot-separated prefix
+ * of, so `markup.deleted` matches `markup.deleted.diff`, and the longest selector
+ * to match wins. A token that matched no background-setting rule keeps the
+ * translucent row behind it, which is the whole point of the base film.
+ */
+export function backgroundFor(rules: BackgroundRule[], scopes: string[]): string | undefined {
+  let best: BackgroundRule | undefined
+  for (const rule of rules) {
+    if (best && rule.selector.length <= best.selector.length) continue
+    const matched = scopes.some(
+      (scope) => scope === rule.selector || scope.startsWith(`${rule.selector}.`),
+    )
+    if (matched) best = rule
+  }
+  return best?.background
+}
+
+/**
  * What to tokenise a file as.
  *
  * Owned code rather than a library's guess, because the awkward cases are the ones

@@ -317,6 +317,19 @@ const CELL_BG: Record<string, string> = {
   meta: '',
 }
 
+/**
+ * The code column paints the row tint itself, over its own base film, rather than
+ * letting the row's background show through. Contrast against a syntax token has to
+ * be a number the test can compute, and it only is once the desktop's contribution
+ * to what sits behind the text is bounded.
+ */
+const CODE_BG: Record<string, string> = {
+  add: 'diff-code diff-code-add',
+  del: 'diff-code diff-code-del',
+  context: 'diff-code',
+  meta: 'diff-code',
+}
+
 interface HunkTableProps {
   hunks: DiffHunk[]
   path: string
@@ -487,21 +500,13 @@ function SplitHunks({
                       className={left && !paired ? 'bg-[var(--diff-del)]' : ''}
                       onAdd={left ? () => setTarget(targetFor(path, left, 'old')) : undefined}
                     />
-                    <Code
-                      line={left}
-                      tokens={left ? tokens?.get(left) : undefined}
-                      className={left && !paired ? 'bg-[var(--diff-del)]' : ''}
-                    />
+                    <Code line={left} tokens={left ? tokens?.get(left) : undefined} />
                     <Gutter
                       value={right?.newLine}
                       className={right && !paired ? 'bg-[var(--diff-add)]' : ''}
                       onAdd={right ? () => setTarget(targetFor(path, right, 'new')) : undefined}
                     />
-                    <Code
-                      line={right}
-                      tokens={right ? tokens?.get(right) : undefined}
-                      className={right && !paired ? 'bg-[var(--diff-add)]' : ''}
-                    />
+                    <Code line={right} tokens={right ? tokens?.get(right) : undefined} />
                   </tr>
                   {attached.map((thread) => (
                     <ThreadRow
@@ -577,20 +582,14 @@ function Gutter({
   )
 }
 
-function Code({
-  line,
-  tokens,
-  className,
-}: {
-  line?: DiffLine
-  tokens?: Token[]
-  className?: string
-}): React.JSX.Element {
-  if (!line) return <td className={cn('align-top', className)} />
+function Code({ line, tokens }: { line?: DiffLine; tokens?: Token[] }): React.JSX.Element {
+  // The empty half of a split row is still part of the code column, so it takes the
+  // base film too rather than leaving a gap in it.
+  if (!line) return <td className="diff-code align-top" />
   return (
     // Both layouts fix their column widths, so a long unbroken line has to wrap
     // rather than run out past the edge of the diff and be clipped.
-    <td className={cn('px-2 align-top break-words whitespace-pre-wrap', className)}>
+    <td className={cn('px-2 align-top break-words whitespace-pre-wrap', CODE_BG[line.kind])}>
       <span className="mr-1 inline-block w-2 shrink-0 text-[var(--diff-gutter)] select-none">
         {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
       </span>

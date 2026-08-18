@@ -50,9 +50,35 @@
   --info: oklch(0.58 0.13 250);
   --info-soft: oklch(0.58 0.13 250 / 0.14);
 
-  --diff-add: oklch(0.85 0.09 150 / 0.4);
+  /*
+   * Behind the diff's code columns, and nowhere else. Every other surface stays
+   * as thin as it was, so the window still reads as frosted glass - but a syntax
+   * token's contrast cannot depend on a wallpaper the app can neither see nor
+   * control, and this is the film that bounds the desktop's contribution.
+   *
+   * The colour is the theme's own editor background (`#ffffff` here, `#0d1117` in
+   * dark). It started as the graphite the rest of the palette is mixed from, and
+   * moved: the theme's contrast is guaranteed against its own background, and at
+   * this bar there is no margin to spend on a tint of ours.
+   *
+   * The alpha is derived rather than chosen - 0.92 is the lowest hundredth at
+   * which `test/color.test.ts` still passes over both a pure-white and a
+   * pure-black desktop, and dark is the side that sets it. This value and the two
+   * row tints below are what that test holds; none of them is free to be nudged by
+   * eye.
+   */
+  --diff-code-base: oklch(1 0 0 / 0.92);
+
+  /*
+   * Fainter than they were, and for a measured reason: `github-light-default`
+   * clears 4.5:1 by only 5.05:1 at its worst meaning-carrying token, so anything
+   * that darkens the row behind that token spends margin the theme has not got.
+   * These sit at the middle of the window between the contrast bar above and the
+   * 1.10:1 row separation below - a window about two percent wide.
+   */
+  --diff-add: oklch(0.85 0.09 150 / 0.25);
   --diff-add-strong: oklch(0.8 0.13 150 / 0.55);
-  --diff-del: oklch(0.85 0.09 25 / 0.4);
+  --diff-del: oklch(0.85 0.09 25 / 0.21);
   --diff-del-strong: oklch(0.8 0.13 25 / 0.5);
   --diff-gutter: oklch(0.5 0.01 265 / 0.55);
 }
@@ -96,6 +122,9 @@
   --busy-soft: oklch(0.82 0.14 78 / 0.16);
   --info: oklch(0.72 0.12 250);
   --info-soft: oklch(0.72 0.12 250 / 0.16);
+
+  /* `#0d1117`, `github-dark-default`'s editor background. See the light block. */
+  --diff-code-base: oklch(0.176 0.014 258.36 / 0.92);
 
   --diff-add: oklch(0.6 0.1 150 / 0.22);
   --diff-add-strong: oklch(0.65 0.14 150 / 0.34);
@@ -256,9 +285,29 @@
    */
   .tok {
     color: var(--shiki-light);
+    background: var(--shiki-light-bg, transparent);
   }
   .dark .tok {
     color: var(--shiki-dark);
+    background: var(--shiki-dark-bg, transparent);
+  }
+
+  /*
+   * The code columns of the diff, and the only place the glass thickens.
+   *
+   * The base film goes on as a background colour and the row tint as an image over
+   * it, so the two stack in one cell without either needing to know the other's
+   * value. Nothing outside these cells changes: a changed row's gutter still paints
+   * the tint straight onto the same glass it always did.
+   */
+  .diff-code {
+    background-color: var(--diff-code-base);
+  }
+  .diff-code-add {
+    background-image: linear-gradient(var(--diff-add), var(--diff-add));
+  }
+  .diff-code-del {
+    background-image: linear-gradient(var(--diff-del), var(--diff-del));
   }
 
   /*
