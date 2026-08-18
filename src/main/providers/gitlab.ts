@@ -8,6 +8,7 @@
 import { request, toOrigin } from '../http.ts'
 import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
 import { gitlabThreads, type GitlabDiscussion } from './threads.ts'
+import { gitlabDiscussionPayload, submitSequentially } from './submit.ts'
 import { countChanges } from '@shared/diff.ts'
 import type {
   Account,
@@ -16,6 +17,7 @@ import type {
   CheckStatus,
   CheckSummary,
   DiffFile,
+  DraftComment,
   MyReviewState,
   ReviewItem,
 } from '@shared/types.ts'
@@ -300,43 +302,34 @@ export const gitlab: Provider = {
   },
 
   async submitReview(session, item, verdict, body, comments) {
-    // One post per comment, in the order they were written. This host has no call
-    // that takes a review and its comments together, so batching them into one
-    // request is its own piece of work; sending them is the part that matters here.
-    for (const comment of comments) {
-      await this.addLineComment(
-        session,
-        item,
-        {
-          itemId: item.id,
-          body: comment.body,
-          path: comment.path,
-          newLine: comment.newLine,
-          oldLine: comment.oldLine,
-        },
-        comment.refs,
-      )
-    }
-
-    // GitLab has no single "submit review" call: approval and the note are separate.
-    if (verdict === 'approve') {
-      await request(api(session, `/projects/${project(item)}/merge_requests/${item.number}/approve`), {
-        method: 'POST',
-        headers: headers(session),
-      })
-      if (body) await this.addComment(session, item, body)
-      return
-    }
-    if (verdict === 'request_changes') {
-      // Closest equivalent: drop any approval and say why.
-      await request(api(session, `/projects/${project(item)}/merge_requests/${item.number}/unapprove`), {
-        method: 'POST',
-        headers: headers(session),
-      }).catch(() => undefined)
-      await this.addComment(session, item, body || 'Changes requested.')
-      return
-    }
-    if (body) await this.addComment(session, item, body)
+    // No call here takes a review and its comments together, and no server-side
+    // draft mechanism is used, so the comments go one at a time and the verdict
+    // last - reported honestly if it stops part-way.
+    await submitSequentially(
+      comments,
+      (comment) => postDiscussion(session, item, comment),
+      async () => {
+        // GitLab has no single "submit review" call: approval and the note are separate.
+        if (verdict === 'approve') {
+          await request(
+            api(session, `/projects/${project(item)}/merge_requests/${item.number}/approve`),
+            { method: 'POST', headers: headers(session) },
+          )
+          if (body) await this.addComment(session, item, body)
+          return
+        }
+        if (verdict === 'request_changes') {
+          // Closest equivalent: drop any approval and say why.
+          await request(
+            api(session, `/projects/${project(item)}/merge_requests/${item.number}/unapprove`),
+            { method: 'POST', headers: headers(session) },
+          ).catch(() => undefined)
+          await this.addComment(session, item, body || 'Changes requested.')
+          return
+        }
+        if (body) await this.addComment(session, item, body)
+      },
+    )
   },
 
   async addComment(session, item, body) {
@@ -368,29 +361,31 @@ export const gitlab: Provider = {
   },
 
   async addLineComment(session, item, draft, refs) {
-    if (!refs.baseSha || !refs.headSha || !refs.startSha) {
-      throw new Error('GitLab needs the merge request diff refs; reload the merge request and try again.')
-    }
-    await request(api(session, `/projects/${project(item)}/merge_requests/${item.number}/discussions`), {
-      method: 'POST',
-      headers: headers(session),
-      form: true,
-      body: {
-        body: draft.body,
-        position: {
-          position_type: 'text',
-          base_sha: refs.baseSha,
-          start_sha: refs.startSha,
-          head_sha: refs.headSha,
-          new_path: draft.path,
-          old_path: draft.path,
-          // Added lines carry only new_line, removed lines only old_line, context both.
-          new_line: draft.newLine,
-          old_line: draft.oldLine,
-        },
-      },
+    await postDiscussion(session, item, {
+      id: '',
+      itemId: item.id,
+      createdAt: '',
+      body: draft.body,
+      path: draft.path,
+      newLine: draft.newLine,
+      oldLine: draft.oldLine,
+      refs,
     })
   },
+}
+
+/** One comment, placed by the three shas the draft recorded. */
+async function postDiscussion(
+  session: Session,
+  item: ReviewItem,
+  comment: DraftComment,
+): Promise<void> {
+  await request(api(session, `/projects/${project(item)}/merge_requests/${item.number}/discussions`), {
+    method: 'POST',
+    headers: headers(session),
+    form: true,
+    body: gitlabDiscussionPayload(comment),
+  })
 }
 
 function emptyChecks(): CheckSummary {

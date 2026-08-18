@@ -153,7 +153,8 @@ Each host makes a different part of this hard:
   it.
 - **GitLab** is the friendliest: `scope=reviews_for_me` does the aggregation server-side. In
   exchange, line comments need the base/start/head SHAs from the MR versions endpoint, and there is
-  no single "submit review" call - approving and commenting are separate requests.
+  no single "submit review" call - approving and commenting are separate requests, and a pending
+  review's comments go one at a time before them.
 - **Forgejo / Gitea** has `review_requested=true` on its issue search, and attaches inline comments
   to a review rather than to the pull request - so there is no thread object to point at, and a
   conversation is instead every comment on one side of one line of one file, which is the rule its
@@ -180,9 +181,10 @@ This is an MVP.
 - Syntax highlighting covers what the extension map names; a file outside it reads as plain text.
 - Resolving a thread works everywhere except Forgejo, whose REST API has no endpoint for it at
   all - so the control is hidden there rather than offered and failed.
-- Submitting a review sends its comments in one call on GitHub, which takes them on review
-  creation. The other three post them one at a time, because none of them has a call that takes a
-  review and its comments together.
+- Submitting a review is one call on GitHub and Forgejo, which take the comments on review
+  creation. GitLab and Bitbucket have no such call, so their comments post one at a time; if that
+  stops part-way it says which landed, and the ones that did not stay drafted so retrying finishes
+  the review rather than repeating it.
 - Drafts are the app's own, so they are invisible to the host: drafting here and reviewing the
   same pull request in a browser produces two half-reviews with nothing reconciling them.
 

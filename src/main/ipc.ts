@@ -5,6 +5,7 @@ import { deck, openExternal } from './deck.ts'
 import { DraftStore, type NewDraft } from './drafts.ts'
 import { DEMO_ACCOUNTS, demoDetail, demoEnabled } from './demo.ts'
 import { providerFor } from './providers/index.ts'
+import { PartialSubmitError } from './providers/submit.ts'
 import {
   addAccount,
   getAccount,
@@ -139,14 +140,24 @@ export function registerIpc(): void {
         throw new Error('There is nothing to submit.')
       }
 
-      await provider.submitReview(
-        deck.session(item.accountId),
-        item,
-        submission.verdict,
-        submission.body,
-        pending,
-      )
-      // Only now: a submission that threw must leave every draft where it was.
+      try {
+        await provider.submitReview(
+          deck.session(item.accountId),
+          item,
+          submission.verdict,
+          submission.body,
+          pending,
+        )
+      } catch (error) {
+        // A host with no batch call can get part of the way. Drop what landed and
+        // keep the rest, so retrying finishes the review instead of saying the
+        // first half of it twice.
+        if (error instanceof PartialSubmitError) {
+          for (const posted of error.posted) drafts.remove(posted.id)
+        }
+        throw error
+      }
+      // Only now: a submission that threw outright leaves every draft where it was.
       drafts.clear(item.id)
       deck.patch(item.id, {
         myReviewState:

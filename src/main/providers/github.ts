@@ -14,6 +14,7 @@ import {
   type GithubGqlComment,
   type GithubReviewThread,
 } from './threads.ts'
+import { githubReviewComments } from './submit.ts'
 import type {
   Account,
   AccountDraft,
@@ -460,14 +461,7 @@ export const github: Provider = {
         // Against the commit the drafts were written on, not whatever the branch
         // has become, so each remark lands on the code its author actually read.
         commit_id: comments[0]?.refs.headSha,
-        comments: comments.length
-          ? comments.map((comment) => ({
-              path: comment.path,
-              body: comment.body,
-              side: comment.newLine ? 'RIGHT' : 'LEFT',
-              line: comment.newLine ?? comment.oldLine,
-            }))
-          : undefined,
+        comments: comments.length ? githubReviewComments(comments) : undefined,
       },
     })
   },

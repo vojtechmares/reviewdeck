@@ -10,6 +10,7 @@
 import { request, toOrigin } from '../http.ts'
 import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
 import { bitbucketThreads, type BitbucketComment } from './threads.ts'
+import { bitbucketCommentPayload, submitSequentially } from './submit.ts'
 import { parseUnifiedDiff } from '@shared/diff.ts'
 import type {
   Account,
@@ -17,6 +18,7 @@ import type {
   CheckRun,
   CheckStatus,
   CheckSummary,
+  DraftComment,
   MyReviewState,
   ReviewItem,
 } from '@shared/types.ts'
@@ -280,38 +282,30 @@ export const bitbucket: Provider = {
   },
 
   async submitReview(session, item, verdict, body, comments) {
-    // One post per comment, in the order they were written. This host has no call
-    // that takes a review and its comments together, so batching them into one
-    // request is its own piece of work; sending them is the part that matters here.
-    for (const comment of comments) {
-      await this.addLineComment(
-        session,
-        item,
-        {
-          itemId: item.id,
-          body: comment.body,
-          path: comment.path,
-          newLine: comment.newLine,
-          oldLine: comment.oldLine,
-        },
-        comment.refs,
-      )
-    }
-
+    // No batch call at all here, so the comments go one at a time and the verdict
+    // last - reported honestly if it stops part-way.
     const base = `${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}`
-    if (verdict === 'approve') {
-      // Clear any standing "request changes" first, otherwise both flags linger.
-      await request(`${base}/request-changes`, { method: 'DELETE', headers: headers(session) }).catch(
-        () => undefined,
-      )
-      await request(`${base}/approve`, { method: 'POST', headers: headers(session) })
-    } else if (verdict === 'request_changes') {
-      await request(`${base}/approve`, { method: 'DELETE', headers: headers(session) }).catch(
-        () => undefined,
-      )
-      await request(`${base}/request-changes`, { method: 'POST', headers: headers(session) })
-    }
-    if (body) await this.addComment(session, item, body)
+
+    await submitSequentially(
+      comments,
+      (comment) => postComment(session, item, comment),
+      async () => {
+        if (verdict === 'approve') {
+          // Clear any standing "request changes" first, otherwise both flags linger.
+          await request(`${base}/request-changes`, {
+            method: 'DELETE',
+            headers: headers(session),
+          }).catch(() => undefined)
+          await request(`${base}/approve`, { method: 'POST', headers: headers(session) })
+        } else if (verdict === 'request_changes') {
+          await request(`${base}/approve`, { method: 'DELETE', headers: headers(session) }).catch(
+            () => undefined,
+          )
+          await request(`${base}/request-changes`, { method: 'POST', headers: headers(session) })
+        }
+        if (body) await this.addComment(session, item, body)
+      },
+    )
   },
 
   async addComment(session, item, body) {
@@ -323,16 +317,15 @@ export const bitbucket: Provider = {
   },
 
   async addLineComment(session, item, draft) {
-    await request(`${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}/comments`, {
-      method: 'POST',
-      headers: headers(session),
-      body: {
-        content: { raw: draft.body },
-        // `to` addresses the new file, `from` the old one.
-        inline: draft.newLine
-          ? { path: draft.path, to: draft.newLine }
-          : { path: draft.path, from: draft.oldLine },
-      },
+    await postComment(session, item, {
+      id: '',
+      itemId: item.id,
+      createdAt: '',
+      body: draft.body,
+      path: draft.path,
+      newLine: draft.newLine,
+      oldLine: draft.oldLine,
+      refs: {},
     })
   },
 
@@ -350,6 +343,19 @@ export const bitbucket: Provider = {
     const url = `${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}/comments/${encodeURIComponent(threadId)}/resolve`
     await request(url, { method: resolved ? 'POST' : 'DELETE', headers: headers(session) })
   },
+}
+
+/** One inline comment, on the new file or the old one. */
+async function postComment(
+  session: Session,
+  item: ReviewItem,
+  comment: DraftComment,
+): Promise<void> {
+  await request(`${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}/comments`, {
+    method: 'POST',
+    headers: headers(session),
+    body: bitbucketCommentPayload(comment),
+  })
 }
 
 function emptyChecks(): CheckSummary {

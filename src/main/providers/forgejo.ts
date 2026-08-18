@@ -13,6 +13,7 @@ import {
   type ForgejoComment,
   type ForgejoReviewComment,
 } from './threads.ts'
+import { forgejoReviewPayload } from './submit.ts'
 import { parseUnifiedDiff } from '@shared/diff.ts'
 import type {
   Account,
@@ -293,31 +294,13 @@ export const forgejo: Provider = {
   },
 
   async submitReview(session, item, verdict, body, comments) {
-    // One post per comment, in the order they were written. This host has no call
-    // that takes a review and its comments together, so batching them into one
-    // request is its own piece of work; sending them is the part that matters here.
-    for (const comment of comments) {
-      await this.addLineComment(
-        session,
-        item,
-        {
-          itemId: item.id,
-          body: comment.body,
-          path: comment.path,
-          newLine: comment.newLine,
-          oldLine: comment.oldLine,
-        },
-        comment.refs,
-      )
-    }
-
-    const event =
-      verdict === 'approve' ? 'APPROVED' : verdict === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT'
+    // A review here takes its comments with it, so the whole thing is one request:
+    // either all of it lands or none of it does, and there is no half state to
+    // report on.
     await request(api(session, `/repos/${item.repoKey}/pulls/${item.number}/reviews`), {
       method: 'POST',
       headers: headers(session),
-      // A COMMENT review with an empty body is rejected, so always send something.
-      body: { event, body: body || (verdict === 'approve' ? 'Approved.' : 'Reviewed.') },
+      body: forgejoReviewPayload(verdict, body, comments),
     })
   },
 
