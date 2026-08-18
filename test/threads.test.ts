@@ -276,10 +276,93 @@ test('bitbucketThreads keeps the inline anchor and drops deleted comments', () =
   assert.equal(threads[1].line, 40)
   assert.equal(threads[1].side, 'old')
   assert.equal(threads[1].comments[0].author.name, 'unknown')
-  for (const thread of threads) {
-    assert.equal(thread.canReply, false)
-    assert.equal(thread.canResolve, false)
-  }
+})
+
+test('bitbucketThreads walks parent references into one ordered thread', () => {
+  const threads = bitbucketThreads([
+    {
+      id: 1,
+      content: { raw: 'opening' },
+      created_on: '2026-08-03T08:00:00Z',
+      inline: { path: 'a.ts', to: 5 },
+    },
+    { id: 3, content: { raw: 'second reply' }, created_on: '2026-08-03T10:00:00Z', parent: { id: 1 } },
+    { id: 2, content: { raw: 'first reply' }, created_on: '2026-08-03T09:00:00Z', parent: { id: 1 } },
+    { id: 4, content: { raw: 'reply to a reply' }, created_on: '2026-08-03T11:00:00Z', parent: { id: 2 } },
+  ])
+
+  assert.equal(threads.length, 1, 'one root, one thread')
+  // Depth first, so a reply sits under what it answers rather than after it.
+  assert.deepEqual(
+    threads[0].comments.map((comment) => comment.body),
+    ['opening', 'first reply', 'reply to a reply', 'second reply'],
+  )
+  assert.equal(threads[0].id, '1', 'the thread is addressed by the comment that opened it')
+  assert.equal(threads[0].line, 5)
+})
+
+test('bitbucketThreads opens a thread for a reply whose parent is not here', () => {
+  // Past the page we fetched, or deleted: the reply must not vanish with it.
+  const threads = bitbucketThreads([
+    { id: 9, content: { raw: 'orphaned' }, created_on: '2026-08-03T09:00:00Z', parent: { id: 404 } },
+    { id: 10, content: { raw: 'child of a deleted parent' }, created_on: '2026-08-03T10:00:00Z', parent: { id: 11 } },
+    { id: 11, content: { raw: 'gone' }, created_on: '2026-08-03T08:00:00Z', deleted: true },
+  ])
+
+  assert.deepEqual(
+    threads.map((thread) => thread.comments[0].body),
+    ['orphaned', 'child of a deleted parent'],
+  )
+})
+
+test('bitbucketThreads reads resolution off the comment that opened the thread', () => {
+  const [open, resolved] = bitbucketThreads([
+    {
+      id: 1,
+      content: { raw: 'still open' },
+      created_on: '2026-08-03T08:00:00Z',
+      inline: { path: 'a.ts', to: 1 },
+    },
+    {
+      id: 2,
+      content: { raw: 'dealt with' },
+      created_on: '2026-08-03T09:00:00Z',
+      inline: { path: 'a.ts', to: 2 },
+      resolution: { type: 'pullrequest_comment_resolution' },
+    },
+  ])
+
+  assert.equal(open.resolved, false)
+  assert.equal(resolved.resolved, true)
+})
+
+test('bitbucketThreads offers a reply everywhere and a resolve only inline', () => {
+  const [general, inline] = bitbucketThreads([
+    { id: 1, content: { raw: 'on the pull request' }, created_on: '2026-08-03T08:00:00Z' },
+    {
+      id: 2,
+      content: { raw: 'on a line' },
+      created_on: '2026-08-03T09:00:00Z',
+      inline: { path: 'a.ts', to: 3 },
+    },
+  ])
+
+  assert.equal(general.canReply, true)
+  // Bitbucket resolves inline threads only, so the control must not appear elsewhere.
+  assert.equal(general.canResolve, false)
+  assert.equal(inline.canReply, true)
+  assert.equal(inline.canResolve, true)
+})
+
+test('bitbucketThreads survives a comment that names itself as its own parent', () => {
+  const threads = bitbucketThreads([
+    { id: 1, content: { raw: 'self-parented' }, created_on: '2026-08-03T08:00:00Z', parent: { id: 1 } },
+  ])
+
+  assert.deepEqual(
+    threads.map((thread) => thread.comments.map((comment) => comment.body)),
+    [['self-parented']],
+  )
 })
 
 test('gitlabThreads keeps a discussion together and reads both capabilities off it', () => {

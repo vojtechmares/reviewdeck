@@ -256,9 +256,9 @@ index 2b4c5d6..9e8f7a1 100644
 `
 
 export function demoDetail(item: ReviewItem): PullDetail {
-  // Only Bitbucket is still flat; and Forgejo can reply but not resolve.
-  const threaded = item.provider !== 'bitbucket'
-  const resolvable = threaded && item.provider !== 'forgejo'
+  // Every host has real threads now; only Forgejo cannot resolve one.
+  const threaded = true
+  const resolvable = item.provider !== 'forgejo'
   return {
     item,
     description:

@@ -75,6 +75,10 @@ export interface BitbucketComment {
   created_on: string
   deleted?: boolean
   inline?: { path: string; to?: number | null; from?: number | null }
+  /** Set on a reply, naming the comment it answers. */
+  parent?: { id?: number } | null
+  /** Set on the thread's opening comment once the thread has been resolved. */
+  resolution?: { type?: string } | null
 }
 
 /** A host comment plus wherever in the diff it was left, before it becomes a thread. */
@@ -316,25 +320,78 @@ export function forgejoThreads(
   )
 }
 
+function bitbucketComment(comment: BitbucketComment): PullComment {
+  return {
+    id: String(comment.id),
+    author: {
+      name: comment.user?.display_name ?? 'unknown',
+      avatarUrl: comment.user?.links?.avatar?.href ?? '',
+    },
+    body: comment.content?.raw ?? '',
+    createdAt: comment.created_on,
+  }
+}
+
+/**
+ * Bitbucket says a reply by naming the comment it answers, so a thread is a chain
+ * walked from whichever comment has no parent. Replies can nest, and the app's
+ * thread is one ordered list, so the tree is flattened depth first with each set of
+ * children in the order they were written.
+ *
+ * A reply whose parent is not here - deleted, or past the page we fetched - opens a
+ * thread of its own rather than disappearing with it.
+ *
+ * Resolution is real on this host: `POST .../comments/{id}/resolve` resolves a
+ * thread and `DELETE` reopens one, and a resolved thread carries a resolution on
+ * the comment that opens it. It is offered on inline threads only, which is where
+ * Bitbucket itself offers it.
+ */
 export function bitbucketThreads(comments: BitbucketComment[]): CommentThread[] {
-  return loneThreads(
-    comments
-      .filter((comment) => !comment.deleted)
-      .map((comment) => ({
-        comment: {
-          id: String(comment.id),
-          author: {
-            name: comment.user?.display_name ?? 'unknown',
-            avatarUrl: comment.user?.links?.avatar?.href ?? '',
-          },
-          body: comment.content?.raw ?? '',
-          createdAt: comment.created_on,
-        },
-        path: comment.inline?.path,
-        line: comment.inline?.to ?? comment.inline?.from ?? undefined,
-        side: comment.inline ? (comment.inline.to ? 'new' : 'old') : undefined,
-      })),
-  )
+  const live = comments.filter((comment) => !comment.deleted)
+  const byId = new Map(live.map((comment) => [comment.id, comment]))
+
+  const children = new Map<number, BitbucketComment[]>()
+  const roots: BitbucketComment[] = []
+
+  for (const comment of live) {
+    const parent = comment.parent?.id
+    if (parent === undefined || !byId.has(parent) || parent === comment.id) {
+      roots.push(comment)
+      continue
+    }
+    const siblings = children.get(parent)
+    if (siblings) siblings.push(comment)
+    else children.set(parent, [comment])
+  }
+
+  const byAge = (a: BitbucketComment, b: BitbucketComment): number =>
+    a.created_on.localeCompare(b.created_on)
+
+  /** Depth first, so a reply sits under what it answers rather than after it. */
+  function chain(root: BitbucketComment, seen: Set<number>): BitbucketComment[] {
+    if (seen.has(root.id)) return []
+    seen.add(root.id)
+    const replies = [...(children.get(root.id) ?? [])].sort(byAge)
+    return [root, ...replies.flatMap((reply) => chain(reply, seen))]
+  }
+
+  const seen = new Set<number>()
+  return roots.sort(byAge).map((root) => {
+    const inline = root.inline
+    const line = inline?.to ?? inline?.from ?? undefined
+
+    return {
+      id: String(root.id),
+      comments: chain(root, seen).map(bitbucketComment),
+      resolved: Boolean(root.resolution),
+      outdated: false,
+      path: inline?.path,
+      line: line ?? undefined,
+      side: inline ? (inline.to ? 'new' : 'old') : undefined,
+      canReply: true,
+      canResolve: Boolean(inline),
+    }
+  })
 }
 
 /**

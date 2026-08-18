@@ -317,6 +317,21 @@ export const bitbucket: Provider = {
       },
     })
   },
+
+  /** A reply is an ordinary comment naming the one that opened the thread. */
+  async replyToThread(session, item, threadId, body) {
+    await request(`${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}/comments`, {
+      method: 'POST',
+      headers: headers(session),
+      body: { content: { raw: body }, parent: { id: Number(threadId) } },
+    })
+  },
+
+  /** Resolving posts to the thread's opening comment; reopening deletes the same. */
+  async setThreadResolved(session, item, threadId, resolved) {
+    const url = `${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}/comments/${encodeURIComponent(threadId)}/resolve`
+    await request(url, { method: resolved ? 'POST' : 'DELETE', headers: headers(session) })
+  },
 }
 
 function emptyChecks(): CheckSummary {

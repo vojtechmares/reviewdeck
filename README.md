@@ -156,7 +156,8 @@ Each host makes a different part of this hard:
 - **Bitbucket** has no "awaiting my review" endpoint at all - `/pullrequests/{user}` returns what
   you *authored*. So it walks your workspaces, lists each repository's open pull requests and keeps
   the ones naming you as a reviewer, bounded to 120 repositories so a large account cannot stall a
-  sync.
+  sync. It says a reply by naming the comment it answers, so threads are chains walked from
+  whichever comment has no parent.
 
 ## Design
 
@@ -172,9 +173,8 @@ This is an MVP.
 - macOS only.
 - Bitbucket Server (the self-hosted one) uses a different API and is not supported; Bitbucket Cloud is.
 - Syntax highlighting covers a common set of languages; a file outside it reads as plain text.
-- Replying to a thread works on GitHub, GitLab and Forgejo; resolving one works on GitHub and
-  GitLab. Forgejo's REST API has no endpoint for resolution at all, so the control is hidden
-  there rather than offered and failed. On Bitbucket every comment is still a thread of its own.
+- Resolving a thread works everywhere except Forgejo, whose REST API has no endpoint for it at
+  all - so the control is hidden there rather than offered and failed.
 
 Features are implemented here rather than pulled in, with one standing exception: parsing
 and rendering content that other people wrote. Markdown goes through `react-markdown`,
