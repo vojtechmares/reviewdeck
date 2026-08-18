@@ -75,7 +75,7 @@ renderer process - the UI only ever asks the main process to make a call on its 
 | --- | --- | --- |
 | GitHub / GHES | Settings → Developer settings → Personal access tokens | `repo`, `read:org` |
 | GitLab | Settings → Access tokens | `api` |
-| Forgejo / Gitea | Settings → Applications | `read:user`, `read:repository`, `write:issue`, `write:repository` |
+| Forgejo / Gitea | Settings → Applications | issue: Read and write, repository: Read and write, user: Read |
 | Bitbucket Cloud | Personal settings → App passwords | Account: Read, Pull requests: Write |
 
 Bitbucket app passwords authenticate as a username/password pair, so it asks for your username too.

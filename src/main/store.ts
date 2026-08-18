@@ -110,6 +110,15 @@ export function getToken(id: string): string {
   return decrypt(stored)
 }
 
+export function setToken(id: string, token: string): void {
+  const vault = load()
+  if (!vault.accounts.some((account) => account.id === id)) {
+    throw new Error('No such account.')
+  }
+  vault.tokens[id] = encrypt(token)
+  persist()
+}
+
 export function getSettings(): Settings {
   return { ...load().settings }
 }
