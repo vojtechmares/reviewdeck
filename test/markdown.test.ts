@@ -4,7 +4,12 @@ import type { Element, Nodes, Root } from 'hast'
 import remarkParse from 'remark-parse'
 import remarkRehype from 'remark-rehype'
 import { unified } from 'unified'
-import { REHYPE_PLUGINS, REMARK_PLUGINS, SANITIZE_SCHEMA } from '../src/shared/markdown.ts'
+import {
+  alertKindOf,
+  REHYPE_PLUGINS,
+  REMARK_PLUGINS,
+  SANITIZE_SCHEMA,
+} from '../src/shared/markdown.ts'
 
 /**
  * The same processor `react-markdown` builds internally: parse, our remark
@@ -199,5 +204,66 @@ test('the sanitize schema pins the elements the app depends on', () => {
     SANITIZE_SCHEMA.tagNames,
     [...new Set(SANITIZE_SCHEMA.tagNames)],
     'the tag name list has duplicates',
+  )
+})
+
+/** The alert kind of each block quote the source produces, in order. */
+async function alertKinds(source: string): Promise<(string | null)[]> {
+  const tree = await render(source)
+  return elements(tree, 'blockquote').map(alertKindOf)
+}
+
+test('alertKindOf recognises every alert marker', async () => {
+  assert.deepEqual(
+    await alertKinds(
+      [
+        '> [!NOTE]',
+        '> Useful information.',
+        '',
+        '> [!TIP]',
+        '> A shortcut.',
+        '',
+        '> [!IMPORTANT]',
+        '> Do not miss this.',
+        '',
+        '> [!WARNING]',
+        '> Urgent.',
+        '',
+        '> [!CAUTION]',
+        '> Risky.',
+      ].join('\n'),
+    ),
+    ['note', 'tip', 'important', 'warning', 'caution'],
+  )
+})
+
+test('alertKindOf recognises a marker standing alone in its own paragraph', async () => {
+  // A blank quoted line puts the marker and the body in separate paragraphs.
+  assert.deepEqual(await alertKinds(['> [!WARNING]', '>', '> Urgent.'].join('\n')), ['warning'])
+})
+
+test('alertKindOf leaves an ordinary block quote alone', async () => {
+  assert.deepEqual(await alertKinds('> Just something someone said.'), [null])
+  assert.deepEqual(await alertKinds('> [not a marker] and then some.'), [null])
+})
+
+test('alertKindOf refuses a malformed or unknown marker', async () => {
+  assert.deepEqual(
+    await alertKinds(
+      [
+        '> [!BOGUS]',
+        '> not a kind that exists',
+        '',
+        '> [!NOTE',
+        '> unclosed',
+        '',
+        '> !NOTE]',
+        '> no opening bracket',
+        '',
+        '> [!NOTE] trailing text on the marker line',
+        '> so the marker does not stand alone',
+      ].join('\n'),
+    ),
+    [null, null, null, null],
   )
 })

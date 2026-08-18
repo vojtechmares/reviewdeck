@@ -10,6 +10,7 @@
  * sanitized tree, so the sanitizer is the only thing standing between a pull
  * request body written by someone else and the app.
  */
+import type { Element } from 'hast'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize, { defaultSchema, type Options as SanitizeSchema } from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
@@ -55,3 +56,31 @@ export const REMARK_PLUGINS: PluggableList = [remarkGfm]
 
 /** Order matters: raw HTML has to become a tree before the sanitizer can prune it. */
 export const REHYPE_PLUGINS: PluggableList = [rehypeRaw, [rehypeSanitize, SANITIZE_SCHEMA]]
+
+export type AlertKind = 'note' | 'tip' | 'important' | 'warning' | 'caution'
+
+/**
+ * A GitHub Alert is an ordinary block quote whose first line is nothing but a
+ * marker: `> [!NOTE]`. The marker has to stand alone on that line, which is what
+ * keeps a block quote that merely opens with square brackets from being mistaken
+ * for one.
+ *
+ * Exported so the renderer can strip exactly what was matched.
+ */
+export const ALERT_MARKER = /^\[!(note|tip|important|warning|caution)\][ \t]*(\r?\n|$)/i
+
+/**
+ * The alert kind a block quote carries, or null for an ordinary one - including a
+ * marker that is misspelt or names a kind that does not exist, which renders as
+ * the block quote it looks like rather than as a broken callout.
+ */
+export function alertKindOf(blockquote: Element): AlertKind | null {
+  const paragraph = blockquote.children.find(
+    (child): child is Element => child.type === 'element' && child.tagName === 'p',
+  )
+  const first = paragraph?.children[0]
+  if (first?.type !== 'text') return null
+
+  const match = ALERT_MARKER.exec(first.value)
+  return match ? (match[1].toLowerCase() as AlertKind) : null
+}
