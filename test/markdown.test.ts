@@ -8,10 +8,12 @@ import {
   alertKindOf,
   REHYPE_PLUGINS,
   REMARK_PLUGINS,
+  rehypeAuthenticatedImages,
   remarkAutolink,
   SANITIZE_SCHEMA,
   type AutolinkContext,
 } from '../src/shared/markdown.ts'
+import { IMAGE_SCHEME, type ImageContext } from '../src/shared/images.ts'
 
 /**
  * The same processor `react-markdown` builds internally: parse, our remark
@@ -350,4 +352,48 @@ test('the transform renders emoji even with no host to link against', async () =
 
   assert.match(text(tree), /Shipped 🚀/)
   assert.equal(elements(tree, 'a').length, 0)
+})
+
+const IMAGES: ImageContext = {
+  repoRoot: 'https://gitlab.acme.dev/acme/api',
+  accounts: [
+    { id: 'acct', baseUrl: 'https://gitlab.acme.dev/api/v4', webUrl: 'https://gitlab.acme.dev' },
+  ],
+}
+
+/** The rehype half as the renderer runs it, with the image rewrite appended. */
+async function renderImages(source: string): Promise<Root> {
+  const processor = unified()
+    .use(remarkParse)
+    .use(REMARK_PLUGINS)
+    .use(remarkRehype, { allowDangerousHtml: true })
+    .use(REHYPE_PLUGINS)
+    .use([[rehypeAuthenticatedImages, IMAGES]])
+  return processor.run(processor.parse(source)) as Promise<Root>
+}
+
+test('the image rewrite outlives the sanitizer, which permits only http and https', async () => {
+  // Ordering, asserted: the sanitizer would strip the custom scheme straight back
+  // off a source rewritten before it, and the diff would be silently unchanged.
+  const tree = await renderImages('![shot](https://gitlab.acme.dev/acme/api/uploads/a/shot.png)')
+
+  const source = elements(tree, 'img')[0].properties.src
+  assert.equal(typeof source, 'string')
+  assert.ok(String(source).startsWith(`${IMAGE_SCHEME}://`), String(source))
+})
+
+test('the image rewrite leaves a source on any other host over plain HTTPS', async () => {
+  const tree = await renderImages('![badge](https://img.shields.io/badge/x.svg)')
+
+  assert.equal(elements(tree, 'img')[0].properties.src, 'https://img.shields.io/badge/x.svg')
+})
+
+test('the image rewrite reaches an image written as raw HTML too', async () => {
+  const tree = await renderImages('<img src="uploads/a/shot.png" width="120" alt="shot">')
+
+  const image = elements(tree, 'img')[0]
+  assert.ok(String(image.properties.src).startsWith(`${IMAGE_SCHEME}://`))
+  // Sanitized attributes survive the rewrite untouched.
+  assert.equal(image.properties.width, 120)
+  assert.equal(image.properties.alt, 'shot')
 })

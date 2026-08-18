@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Menu, nativeTheme, shell, Tray, nativeImage } from 'electron'
 import { join } from 'node:path'
 import { deck } from './deck.ts'
+import { registerImageScheme, serveImages } from './images.ts'
 import { registerIpc } from './ipc.ts'
 import { getSettings } from './store.ts'
 
@@ -169,9 +170,13 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', show)
 
+  // Has to happen before the app is ready, unlike everything else below.
+  registerImageScheme()
+
   void app.whenReady().then(() => {
     nativeTheme.themeSource = getSettings().theme
 
+    serveImages()
     registerIpc()
     buildMenu()
     mainWindow = createWindow()

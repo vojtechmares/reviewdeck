@@ -33,7 +33,7 @@ import { ThreadCard } from './Thread'
 type Tab = 'diff' | 'checks' | 'conversation'
 
 export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
-  const { settings, updateSettings, refresh, accountFor } = useApp()
+  const { accounts, settings, updateSettings, refresh, accountFor } = useApp()
   const toast = useToast()
 
   const [detail, setDetail] = useState<PullDetail | null>(null)
@@ -166,18 +166,21 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
 
   const canSubmit = (verdict === 'approve' || body.trim().length > 0) && !submitting
 
-  // Where `@someone` and `#123` in this pull request's prose should point.
-  const autolink = useMemo(
+  // Where `@someone`, `#123` and a relative image source in this pull request's
+  // prose should point. Every signed-in account is offered, not just this item's,
+  // because a description can embed an image from another host we are signed in to.
+  const markdownTargets = useMemo(
     () => ({
       provider: item.provider,
       webUrl: accountFor(item.accountId)?.webUrl ?? '',
       repoRoot: repositoryRoot(item),
+      accounts,
     }),
-    [accountFor, item],
+    [accountFor, accounts, item],
   )
 
   return (
-    <MarkdownLinks value={autolink}>
+    <MarkdownLinks value={markdownTargets}>
       <div className="flex min-h-0 flex-1 flex-col">
         <header className="glass-quiet shrink-0 border-b border-border px-5 pt-3 pb-0">
           <div className="flex items-start gap-3">

@@ -109,6 +109,13 @@ The renderer never talks to a Git host. It asks the main process, which holds th
 the HTTP. Context isolation is on, node integration is off, and the renderer runs under a CSP with
 `connect-src 'self'`, so a malicious pull request title has nowhere to go.
 
+The one exception is images, and it is not really one: a screenshot pasted into a private GitLab
+merge request needs a token, and an image tag cannot carry a header. Those sources are pointed at
+a `reviewdeck-image:` scheme the main process serves, which fetches them with the right account's
+token and streams the bytes back. A request is only served when the host it names belongs to the
+account it names, so no token can reach a host it does not belong to; everything else loads over
+ordinary HTTPS with no credential involved.
+
 ### Adding a provider
 
 Implement the `Provider` interface in `src/main/providers/types.ts` - connect, list review

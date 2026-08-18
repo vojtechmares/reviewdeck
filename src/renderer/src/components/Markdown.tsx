@@ -22,9 +22,11 @@ import {
   alertKindOf,
   REHYPE_PLUGINS,
   REMARK_PLUGINS,
+  rehypeAuthenticatedImages,
   remarkAutolink,
 } from '@shared/markdown'
 import type { AlertKind, AutolinkContext } from '@shared/markdown'
+import type { ImageContext } from '@shared/images'
 import { cn } from '@/lib/utils'
 
 /**
@@ -117,23 +119,27 @@ function withoutMarker(children: ReactNode): ReactNode {
 
 const COMPONENTS: Components = { blockquote: Blockquote }
 
+/** Everything a body needs to resolve against the pull request it belongs to. */
+export type MarkdownTargets = AutolinkContext & ImageContext
+
 /**
- * Which host a body was written on, so `@someone` and `#123` resolve there.
+ * Which host a body was written on, so `@someone`, `#123` and a relative image
+ * source resolve there.
  *
  * A context rather than a prop, because markdown is rendered several levels down -
  * a comment inside a thread inside a diff row - and every one of those surfaces
  * belongs to the same pull request anyway.
  */
-const AutolinkTargets = createContext<AutolinkContext | null>(null)
+const Targets = createContext<MarkdownTargets | null>(null)
 
 export function MarkdownLinks({
   value,
   children,
 }: {
-  value: AutolinkContext
+  value: MarkdownTargets
   children: ReactNode
 }): React.JSX.Element {
-  return <AutolinkTargets.Provider value={value}>{children}</AutolinkTargets.Provider>
+  return <Targets.Provider value={value}>{children}</Targets.Provider>
 }
 
 /**
@@ -158,10 +164,15 @@ export function Markdown({
   compact?: boolean
   className?: string
 }): React.JSX.Element {
-  const targets = useContext(AutolinkTargets)
+  const targets = useContext(Targets)
   // Emoji renders with or without a host; only the links need one.
   const remarkPlugins = useMemo<PluggableList>(
     () => [...REMARK_PLUGINS, [remarkAutolink, targets]],
+    [targets],
+  )
+  // Last, after the sanitizer: it only permits http and https on an image source.
+  const rehypePlugins = useMemo<PluggableList>(
+    () => [...REHYPE_PLUGINS, [rehypeAuthenticatedImages, targets]],
     [targets],
   )
 
@@ -169,7 +180,7 @@ export function Markdown({
     <div className={cn('md', compact && 'md-compact', className)}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
-        rehypePlugins={REHYPE_PLUGINS}
+        rehypePlugins={rehypePlugins}
         components={COMPONENTS}
       >
         {children}

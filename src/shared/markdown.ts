@@ -10,13 +10,14 @@
  * sanitized tree, so the sanitizer is the only thing standing between a pull
  * request body written by someone else and the app.
  */
-import type { Element } from 'hast'
+import type { Element, Root as HastRoot, Nodes as HastNodes } from 'hast'
 import type { Nodes, Parent, PhrasingContent, Root, Text } from 'mdast'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize, { defaultSchema, type Options as SanitizeSchema } from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import type { Plugin, PluggableList } from 'unified'
 import { autolinkSpans, issueUrl, mentionUrl, renderEmoji } from './autolink.ts'
+import { rewriteImageSource, type ImageContext } from './images.ts'
 import type { ProviderKind } from './types.ts'
 
 /**
@@ -175,5 +176,31 @@ export const remarkAutolink: Plugin<[AutolinkContext | null], Root> = (context) 
       out.push({ type: 'text', value: renderEmoji(node.value.slice(cursor)) })
     }
     return out
+  }
+}
+
+/**
+ * Points images that need a credential at the scheme the main process serves, and
+ * leaves every other source exactly as it was.
+ *
+ * Runs last, after the sanitizer: the sanitizer only permits http and https on an
+ * image source, so rewriting before it would have the new scheme stripped straight
+ * back out again. Running after also means it only ever sees sources the sanitizer
+ * has already vouched for.
+ */
+export const rehypeAuthenticatedImages: Plugin<[ImageContext | null], HastRoot> = (context) => {
+  return (tree: HastRoot): void => {
+    if (!context) return
+    visit(tree)
+  }
+
+  function visit(node: HastNodes): void {
+    if (node.type === 'element' && node.tagName === 'img') {
+      const source = node.properties['src']
+      if (typeof source === 'string') {
+        node.properties['src'] = rewriteImageSource(source, context!)
+      }
+    }
+    if ('children' in node) for (const child of node.children) visit(child)
   }
 }
