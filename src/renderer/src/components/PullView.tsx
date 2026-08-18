@@ -12,6 +12,7 @@ import {
   Send,
   X,
 } from 'lucide-react'
+import { PROVIDER_LABELS } from '@shared/types'
 import type {
   DraftComment,
   LineCommentDraft,
@@ -21,11 +22,13 @@ import type {
 } from '@shared/types'
 import { agentCommand } from '@shared/agent-prompt'
 import { repositoryRoot } from '@shared/autolink'
+import { headMoved } from '@shared/drafts'
 import { cn, relativeTime } from '@/lib/utils'
 import { errorMessage, useApp } from '@/hooks/useApp'
 import { Avatar } from './ui/avatar'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import { Dialog } from './ui/dialog'
 import { Textarea } from './ui/input'
 import { Tooltip } from './ui/tooltip'
 import { useToast } from './ui/toast'
@@ -50,6 +53,8 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
   const [verdict, setVerdict] = useState<ReviewVerdict | null>(null)
   const [body, setBody] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  /** The freshly loaded diff, held while the reviewer is told the author pushed. */
+  const [pushed, setPushed] = useState<PullDetail | null>(null)
 
   // Reload whenever the selection changes; a stale diff would be worse than a spinner.
   useEffect(() => {
@@ -61,6 +66,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
     setTab('diff')
     setVerdict(null)
     setBody('')
+    setPushed(null)
 
     // Drafts are the main process's, so they are read back rather than remembered.
     void window.reviewdeck.drafts.list(item.id).then((pending) => {
@@ -189,7 +195,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
       .catch((cause: unknown) => toast.bad(errorMessage(cause)))
   }, [accountFor, detail, item, settings, toast])
 
-  const submit = useCallback(async () => {
+  const send = useCallback(async () => {
     if (submitting) return
     setSubmitting(true)
     try {
@@ -224,6 +230,27 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
       setSubmitting(false)
     }
   }, [body, drafts.length, item.id, refresh, submitting, toast, verdict])
+
+  /**
+   * On an active pull request the author pushing mid-review is ordinary, so the
+   * reviewer is told before their remarks go out rather than after.
+   *
+   * The check needs the head as it is now, not as it was when the diff was loaded,
+   * and the reload doubles as the updated diff to offer - so it costs one request
+   * and only when there are drafts to be stale.
+   */
+  const submit = useCallback(async () => {
+    if (submitting) return
+
+    if (drafts.length) {
+      const fresh = await window.reviewdeck.pull.detail(item.id).catch(() => null)
+      if (fresh && headMoved(drafts, fresh.refs)) {
+        setPushed(fresh)
+        return
+      }
+    }
+    await send()
+  }, [drafts, item.id, send, submitting])
 
   const canSubmit =
     (verdict === 'approve' || drafts.length > 0 || body.trim().length > 0) && !submitting
@@ -461,6 +488,44 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
           </div>
         </footer>
       </div>
+
+      <Dialog
+        open={pushed !== null}
+        onClose={() => setPushed(null)}
+        title="The author has pushed"
+        description={`${item.author.name} has pushed to ${item.sourceBranch} since you started drafting.`}
+        className="max-w-md"
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                // Reading first is the other reasonable thing to want, and the
+                // updated diff is already here from the check.
+                if (pushed) setDetail(pushed)
+                setPushed(null)
+              }}
+            >
+              Read the new diff first
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => {
+                setPushed(null)
+                void send()
+              }}
+            >
+              Submit {drafts.length} comment{drafts.length === 1 ? '' : 's'}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[13px] leading-relaxed">
+          Your comments will be sent against the diff you read, so each one lands on the code you
+          were actually looking at. {PROVIDER_LABELS[item.provider]} will mark them outdated
+          itself - nothing is dropped, and nothing is moved to a different line.
+        </p>
+      </Dialog>
     </MarkdownLinks>
   )
 }

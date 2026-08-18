@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DraftStore, type NewDraft } from '../src/main/drafts.ts'
+import { draftedHeads, headMoved } from '../src/shared/drafts.ts'
 import type { DraftComment } from '../src/shared/types.ts'
 
 const REFS = { baseSha: 'base1', startSha: 'start1', headSha: 'head1' }
@@ -147,4 +148,51 @@ test('drafts written before a restart are there afterwards', () => {
     reopened.list('item').map((entry) => entry.body),
     ['survives'],
   )
+})
+
+function written(head: string | undefined, id = head ?? 'none'): DraftComment {
+  return {
+    id,
+    itemId: 'item',
+    body: 'a remark',
+    path: 'src/a.ts',
+    newLine: 12,
+    createdAt: '2026-08-05T10:00:00Z',
+    refs: head ? { baseSha: 'base1', startSha: 'start1', headSha: head } : {},
+  }
+}
+
+test('headMoved says nothing when the pull request has not moved', () => {
+  const drafts = [written('head1', 'a'), written('head1', 'b')]
+
+  assert.equal(headMoved(drafts, { headSha: 'head1' }), false)
+  assert.equal(headMoved(drafts, { baseSha: 'base9', startSha: 'start9', headSha: 'head1' }), false)
+  // Nothing drafted, nothing to warn about.
+  assert.equal(headMoved([], { headSha: 'head2' }), false)
+})
+
+test('headMoved spots a head the pull request no longer has', () => {
+  assert.equal(headMoved([written('head1')], { headSha: 'head2' }), true)
+
+  // One stale draft among fresh ones is still a push the reviewer should know about.
+  const mixed = [written('head2', 'a'), written('head1', 'b'), written('head2', 'c')]
+  assert.equal(headMoved(mixed, { headSha: 'head2' }), true)
+})
+
+test('headMoved refuses to warn on a guess', () => {
+  // Without both sides there is nothing to compare, and a warning nobody can act on
+  // is one the reviewer learns to dismiss.
+  assert.equal(headMoved([written(undefined)], { headSha: 'head2' }), false)
+  assert.equal(headMoved([written('head1')], undefined), false)
+  assert.equal(headMoved([written('head1')], {}), false)
+  assert.equal(headMoved([written('head1')], { baseSha: 'base1' }), false)
+})
+
+test('draftedHeads names each head once, in the order it was first written against', () => {
+  assert.deepEqual(
+    draftedHeads([written('head1', 'a'), written('head2', 'b'), written('head1', 'c')]),
+    ['head1', 'head2'],
+  )
+  assert.deepEqual(draftedHeads([written(undefined)]), [])
+  assert.deepEqual(draftedHeads([]), [])
 })

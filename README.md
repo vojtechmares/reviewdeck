@@ -30,7 +30,8 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
   meant them to - fenced code included, highlighted by the same thing the diff is.
 - **A pending review.** Line comments accumulate as drafts you can edit and drop, kept per pull
   request and across restarts, and submitted together with one verdict - so the author gets one
-  coherent review instead of a notification per remark.
+  coherent review instead of a notification per remark. If they push while you are drafting, you
+  are told before anything is sent, and your remarks still land on the code you read.
 - **Approve or request changes** from the app, plus ordinary pull-request comments.
 - **Hand a review to your agent.** One button copies a ready-to-paste Claude prompt - title,
   base branch, open threads and the exact fetch command for that host. Nothing is spawned: it
