@@ -7,15 +7,17 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.5.2",
   "scripts": {
+    "postinstall": "install-electron",
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "build": "pnpm run typecheck && electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "icon": "node scripts/make-icon.mjs",
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
-    "dist": "npm run build && electron-builder --mac --config electron-builder.yml",
-    "dist:dir": "npm run build && electron-builder --mac --dir --config electron-builder.yml"
+    "dist": "pnpm run build && electron-builder --mac --config electron-builder.yml",
+    "dist:dir": "pnpm run build && electron-builder --mac --dir --config electron-builder.yml"
   },
   "dependencies": {},
   "devDependencies": {

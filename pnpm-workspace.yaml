@@ -1,0 +1,26 @@
+# pnpm settings for this project. Single package, no workspace members.
+
+# Dependencies allowed to run install scripts (global strictDepBuilds is on).
+# pnpm 11 gates on allowBuilds; the older onlyBuiltDependencies array is not
+# consulted, so entries have to live here.
+allowBuilds:
+  esbuild: true # installs the platform bundler binary
+  electron: true # no-op on 43.x, which fetches its binary on first run, not at install
+  electron-winstaller: false # Windows installer tooling; this app ships macOS only
+
+# Narrow, version-pinned exemptions from the "no-downgrade" trust policy.
+#
+# Both versions come from the 2023-07-10 backport wave for CVE-2022-25883 (semver
+# ReDoS), published within hours of each other by an npm CLI maintainer through the
+# legacy release path, so neither carries provenance - while 7.5.x from the same
+# weeks publishes through CI and does. pnpm compares by publish date only, so it
+# reads the older, still-maintained lines as a downgrade.
+#
+# semver@5.7.2 is reached via electron-builder -> builder-util -> tiny-async-pool.
+# semver@6.3.1 is reached via @vitejs/plugin-react -> @babel/core, which pins ^6.3.1.
+#
+# Both versions must share one entry: pnpm consults only the first rule whose
+# package name matches, so separate `semver@...` lines would silently shadow.
+# Exact versions, not wildcards - any other semver release is still checked.
+trustPolicyExclude:
+  - semver@5.7.2||6.3.1

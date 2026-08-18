@@ -27,14 +27,17 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
 ## Running it
 
 ```sh
-npm install
-npm run dev        # development, with hot reload
-npm run build      # typecheck + production bundle
-npm run dist       # signed-if-possible .dmg in release/
-npm run dist:dir   # unpacked .app in release/mac-arm64/
-npm test           # unit tests for the diff parser and provider helpers
-npm run icon       # regenerate resources/icon.icns
+pnpm install
+pnpm dev            # development, with hot reload
+pnpm build          # typecheck + production bundle
+pnpm dist           # signed-if-possible .dmg in release/
+pnpm dist:dir       # unpacked .app in release/mac-arm64/
+pnpm test           # unit tests for the diff parser and provider helpers
+pnpm icon           # regenerate resources/icon.icns
 ```
+
+The pnpm version is pinned in `package.json` under `packageManager`, so `corepack enable` is
+enough to get the right one.
 
 To poke at the UI without connecting a real account, run with `REVIEWDECK_DEMO=1` - the deck fills
 with fixtures and the diff viewer renders a sample pull request.
