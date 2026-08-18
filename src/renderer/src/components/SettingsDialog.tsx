@@ -108,6 +108,15 @@ export function SettingsDialog({
             checked={settings.hideApproved}
             onChange={(value) => set('hideApproved', value)}
           />
+          <Toggle
+            label="Show the review count in the menu bar"
+            checked={settings.showMenuBarCount}
+            onChange={(value) => set('showMenuBarCount', value)}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Off leaves just the Reviewdeck icon up there. The count is still in the menu
+            itself, one click away.
+          </p>
         </Section>
 
         <Section title="Agent handoff">

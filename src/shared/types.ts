@@ -203,6 +203,8 @@ export interface Settings {
   theme: 'system' | 'light' | 'dark'
   /** Hide PRs the user has already approved. */
   hideApproved: boolean
+  /** Draw the waiting count beside the menu bar icon. Off leaves the icon alone. */
+  showMenuBarCount: boolean
   launchAtLogin: boolean
   /**
    * The command a copied agent handoff is built around. Any command or shell alias
@@ -222,6 +224,7 @@ export const DEFAULT_SETTINGS: Settings = {
   diffView: 'split',
   theme: 'system',
   hideApproved: false,
+  showMenuBarCount: true,
   launchAtLogin: false,
   agentCommand: DEFAULT_AGENT_COMMAND,
 }

@@ -66,6 +66,20 @@ test('the settings type no longer carries the whitespace-display key', () => {
   assert.equal(Object.hasOwn(DEFAULT_SETTINGS, 'showWhitespace'), false)
 })
 
+test('the menu bar shows its count unless somebody turns it off', () => {
+  assert.equal(DEFAULT_SETTINGS.showMenuBarCount, true)
+  assert.equal(mergeSettings({ showMenuBarCount: false }).showMenuBarCount, false)
+})
+
+test('a vault written before the quiet menu bar existed keeps its count', () => {
+  const older = { theme: 'dark', hideApproved: true } as Partial<Settings>
+
+  const merged = mergeSettings(older)
+
+  assert.equal(merged.showMenuBarCount, true)
+  assert.equal(merged.hideApproved, true)
+})
+
 test('the approved filter is off by default, so nothing is hidden', () => {
   const item = review('1', 'approved')
   assert.equal(isVisibleReview(item, DEFAULT_SETTINGS), true)

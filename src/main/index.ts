@@ -97,9 +97,12 @@ function createTray(): void {
     const { items, statuses } = deck.state()
     // The same reviews the window lists, not every review the deck holds: a menu
     // bar that says three while the app shows one is the menu bar being wrong.
-    const waiting = visibleReviews(items, getSettings())
+    const settings = getSettings()
+    const waiting = visibleReviews(items, settings)
     const failing = statuses.filter((status) => !status.ok).length
-    tray?.setTitle(waiting.length ? ` ${waiting.length}` : '')
+    // Empty rather than a space when the count is off, so the icon sits where it
+    // would if nothing were ever drawn beside it. The context menu still counts.
+    tray?.setTitle(settings.showMenuBarCount && waiting.length ? ` ${waiting.length}` : '')
     tray?.setContextMenu(
       Menu.buildFromTemplate([
         {
