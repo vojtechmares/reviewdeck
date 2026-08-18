@@ -24,13 +24,32 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
 - **CI status at a glance.** Passed / Running / Failed / Unknown per pull request, with the
   per-check breakdown, and a faster background poll while anything is still running.
 
+## Install
+
+Apple silicon, macOS 12 or later.
+
+```sh
+brew install --cask vojtechmares/tap/reviewdeck
+```
+
+Or take the `.dmg` from the [latest release](https://github.com/vojtechmares/reviewdeck/releases/latest)
+and drag `Reviewdeck.app` into Applications.
+
+Reviewdeck is ad-hoc signed but not notarised - there is no Apple Developer ID behind it - so
+Gatekeeper will not launch a copy it saw arrive from the internet until the quarantine flag is
+gone. The cask clears it for you; a manual download needs right-click → Open once, or:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Reviewdeck.app
+```
+
 ## Running it
 
 ```sh
 pnpm install
 pnpm dev            # development, with hot reload
 pnpm build          # typecheck + production bundle
-pnpm dist           # signed-if-possible .dmg in release/
+pnpm dist           # ad-hoc signed .dmg and .zip in release/
 pnpm dist:dir       # unpacked .app in release/mac-arm64/
 pnpm test           # unit tests for the diff parser and provider helpers
 pnpm icon           # regenerate resources/icon.icns
@@ -120,6 +139,36 @@ This is an MVP.
 - Comment bodies render as plain text, not Markdown.
 - Diffs are not syntax highlighted.
 - Line comments start a new thread; replying to an existing thread happens in the browser.
+
+## Releasing
+
+Tags drive everything. `scripts/release.sh` only creates and pushes the tag; the
+[release workflow](.github/workflows/release.yml) does the rest.
+
+```sh
+./scripts/release.sh              # next version from the commit log (needs svu)
+./scripts/release.sh minor        # force a patch/minor/major bump
+./scripts/release.sh v1.2.3       # an explicit version
+./scripts/release.sh -n           # work out the version and stop
+```
+
+On a `v*` tag the workflow refuses anything that is not on `main`, stamps the version out of the
+tag, tests, builds, packages, publishes a GitHub release carrying the `.dmg`, the `.zip` and
+`checksums.txt`, and then rewrites `Casks/reviewdeck.rb` in
+[vojtechmares/homebrew-tap](https://github.com/vojtechmares/homebrew-tap) to point at the new zip.
+A prerelease tag (`v1.2.3-rc.1`) publishes the release but leaves the tap on the last stable
+version.
+
+The `version` in `package.json` is not the released version - the tag is, and the build stamps it
+in - so cutting a release needs no commit.
+
+The tap lives in another repository, which `github.token` cannot reach, so the workflow needs one
+secret: `HOMEBREW_TAP_TOKEN`, a PAT with `contents: write` on the tap. `scripts/bump-cask.sh`
+renders the cask and can be run by hand against a published release:
+
+```sh
+VERSION=1.2.3 SHA256=<sha256 of the zip> DRY_RUN=1 ./scripts/bump-cask.sh
+```
 
 ## Licence
 

@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  # Not on tags: the release workflow runs the same tests and the same build,
+  # and a macOS runner doing it twice for one push is money for nothing.
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      # electron-builder refuses to sign on pull requests unless this is set,
+      # and an unsigned arm64 bundle will not launch at all. The signature is
+      # ad-hoc, so there is no certificate and no secret for a fork to reach -
+      # the warning the flag silences does not apply here.
+      CSC_FOR_PULL_REQUEST: "true"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # The Electron binary is ~100 MB and is fetched twice - once by the
+      # postinstall hook, once by electron-builder for the target arch.
+      - name: Cache the Electron downloads
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: electron-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm test
+
+      - name: Typecheck and build
+        run: pnpm build
+
+      # --dir only, so every push exercises packaging and signing without
+      # paying for the dmg. The release workflow builds the real artifacts.
+      - name: Package the app
+        run: pnpm exec electron-builder --mac --dir --config electron-builder.yml
+
+      - name: Verify the bundle
+        run: ./scripts/verify-app.sh release/mac-arm64/Reviewdeck.app
+
+      - name: Zip the app
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent \
+            release/mac-arm64/Reviewdeck.app "release/Reviewdeck-${GITHUB_SHA::7}.zip"
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v7
+        with:
+          name: Reviewdeck-${{ github.sha }}
+          path: release/*.zip
+          if-no-files-found: error

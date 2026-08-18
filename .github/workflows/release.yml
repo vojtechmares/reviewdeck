@@ -1,0 +1,273 @@
+name: Release
+
+# Tags are pushed by scripts/release.sh; this workflow does everything after
+# that - test, build, package, publish, bump the tap.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_BRANCH: main
+  # Workflow level, so the cask job's checkout and bump-cask.sh agree on where
+  # the tap is - the script reads both of these straight out of the environment.
+  TAP_REPO: vojtechmares/homebrew-tap
+  TAP_BRANCH: master
+
+jobs:
+  # A tag push carries no branch, and `on.push.tags` cannot be filtered by one,
+  # so the branch check has to happen here. Nothing else runs until it passes.
+  guard:
+    name: Check the tag is on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify the tagged commit is on ${{ env.RELEASE_BRANCH }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
+          # An annotated tag can leave GITHUB_SHA pointing at the tag object
+          # rather than the commit, and merge-base wants a commit.
+          COMMIT="$(git rev-parse "HEAD^{commit}")"
+          if ! git merge-base --is-ancestor "$COMMIT" "origin/$RELEASE_BRANCH"; then
+            echo "::error::$GITHUB_REF_NAME points at a commit that is not on $RELEASE_BRANCH - releases are cut from $RELEASE_BRANCH only"
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME is on $RELEASE_BRANCH"
+
+  release:
+    name: Build and publish
+    needs: guard
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      sha256: ${{ steps.package.outputs.zip_sha256 }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Cache the Electron downloads
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: electron-${{ runner.os }}-
+
+      - name: Resolve the version
+        id: version
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$TAG is not a semver tag"
+            exit 1
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            if [[ "$VERSION" == *-* ]]; then
+              echo "prerelease=true"
+            else
+              echo "prerelease=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The tag is the only source of truth for the version, so package.json in
+      # the repository stays at whatever it says and the build stamps the real
+      # number in. Done after install so the lockfile check sees the committed
+      # package.json.
+      - name: Stamp the version
+        run: pnpm pkg set version="${{ steps.version.outputs.version }}"
+
+      - name: Test
+        run: pnpm test
+
+      - name: Typecheck and build
+        run: pnpm build
+
+      - name: Package the app
+        run: pnpm exec electron-builder --mac --config electron-builder.yml
+
+      - name: Verify the bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./scripts/verify-app.sh release/mac-arm64/Reviewdeck.app
+
+      - name: Checksum the artifacts
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          DMG="Reviewdeck-$VERSION-arm64.dmg"
+          ZIP="Reviewdeck-$VERSION-arm64.zip"
+          cd release
+          for FILE in "$DMG" "$ZIP"; do
+            [[ -f "$FILE" ]] || { echo "::error::electron-builder produced no $FILE"; exit 1; }
+          done
+          shasum -a 256 "$DMG" "$ZIP" > checksums.txt
+          cat checksums.txt
+          {
+            echo "dmg_sha256=$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+            echo "zip_sha256=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          DMG_SHA256: ${{ steps.package.outputs.dmg_sha256 }}
+          ZIP_SHA256: ${{ steps.package.outputs.zip_sha256 }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            -f target_commitish="$(git rev-parse "HEAD^{commit}")" \
+            --jq .body > release/notes.md
+
+          REPO_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          DOWNLOAD="$REPO_URL/releases/download/$TAG"
+          # vojtechmares/homebrew-tap is vojtechmares/tap to brew.
+          TAP="${TAP_REPO/\/homebrew-/\/}"
+
+          cat >> release/notes.md <<EOF
+
+          ## Install
+
+          Apple silicon, macOS 12 or later.
+
+          ### Homebrew (recommended)
+
+          \`\`\`sh
+          brew install --cask $TAP/reviewdeck
+          \`\`\`
+
+          The cask clears the \`com.apple.quarantine\` flag for you - see
+          [Install]($REPO_URL#install) in the README.
+          EOF
+
+          # The cask job is skipped for prereleases, so the tap still points at
+          # the last stable version - say so rather than let brew look broken.
+          if [[ "$PRERELEASE" == "true" ]]; then
+            cat >> release/notes.md <<EOF
+
+          This is a prerelease and the tap only carries stable releases, so brew
+          installs $VERSION only once it ships. Until then, use the download
+          below.
+          EOF
+          fi
+
+          cat >> release/notes.md <<EOF
+
+          ### Download
+
+          [Reviewdeck-$VERSION-arm64.dmg]($DOWNLOAD/Reviewdeck-$VERSION-arm64.dmg) -
+          open it and drag \`Reviewdeck.app\` into Applications. The bundle is
+          ad-hoc signed but not notarised, so the first launch needs
+          right-click → Open, or clear the flag yourself:
+
+          \`\`\`sh
+          xattr -dr com.apple.quarantine /Applications/Reviewdeck.app
+          \`\`\`
+
+          \`\`\`
+          $DMG_SHA256  Reviewdeck-$VERSION-arm64.dmg
+          $ZIP_SHA256  Reviewdeck-$VERSION-arm64.zip
+          \`\`\`
+
+          ### From source
+
+          \`\`\`sh
+          git clone $REPO_URL.git
+          cd reviewdeck
+          git checkout $TAG
+          corepack enable && pnpm install && pnpm dist
+          \`\`\`
+          EOF
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          ARGS=(--title "$TAG" --notes-file release/notes.md)
+          if [[ "$PRERELEASE" == "true" ]]; then
+            ARGS+=(--prerelease)
+          fi
+          gh release create "$TAG" "${ARGS[@]}" \
+            "release/Reviewdeck-$VERSION-arm64.dmg" \
+            "release/Reviewdeck-$VERSION-arm64.zip" \
+            release/checksums.txt
+
+  # The tap lives in another repository, so github.token cannot reach it -
+  # HOMEBREW_TAP_TOKEN is a PAT with contents:write on the tap.
+  cask:
+    name: Bump the Homebrew cask
+    needs: release
+    if: needs.release.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      # An unset secret checks out the public tap happily and only fails on the
+      # push, several minutes later, with a bare 403. Say so up front instead.
+      - name: Check the tap token is set
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAP_TOKEN" ]]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set - it needs a PAT with contents:write on $TAP_REPO"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - name: Check out the tap
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.TAP_REPO }}
+          ref: ${{ env.TAP_BRANCH }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+          persist-credentials: true
+
+      - name: Render and push the cask
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          SHA256: ${{ needs.release.outputs.sha256 }}
+          REPO: ${{ github.repository }}
+          TAP_DIR: ${{ github.workspace }}/tap
+        run: ./scripts/bump-cask.sh

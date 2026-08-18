@@ -9,9 +9,18 @@ files:
 mac:
   icon: resources/icon.icns
   category: public.app-category.developer-tools
+  # Ad-hoc, always. There is no Developer ID certificate, and pinning the
+  # identity keeps a local `pnpm dist` the same shape as the release workflow
+  # instead of quietly picking up whatever happens to be in the keychain.
+  identity: "-"
   target:
+    # The dmg is what a human downloads; the zip is what the Homebrew cask
+    # installs, so brew does not have to mount a disk image.
     - target: dmg
       arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
   darkModeSupport: true
   hardenedRuntime: true
   gatekeeperAssess: false
