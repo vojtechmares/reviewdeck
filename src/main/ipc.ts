@@ -1,6 +1,6 @@
 /** Every channel the renderer can call. Each handler is the only way in. */
 
-import { app, ipcMain, nativeTheme } from 'electron'
+import { app, clipboard, ipcMain, nativeTheme } from 'electron'
 import { deck, openExternal } from './deck.ts'
 import { DEMO_ACCOUNTS, demoDetail, demoEnabled } from './demo.ts'
 import { providerFor } from './providers/index.ts'
@@ -39,7 +39,10 @@ export function registerIpc(): void {
       if (!draft.token?.trim()) throw new Error('A token is required.')
       const provider = providerFor(draft.kind)
       const resolved = await provider.connect({ ...draft, token: draft.token.trim() })
-      const account = addAccount(resolved, draft.token.trim())
+      const account = addAccount(
+        { ...resolved, agentCommand: draft.agentCommand?.trim() || undefined },
+        draft.token.trim(),
+      )
       void deck.refresh()
       return account
     } catch (error) {
@@ -70,7 +73,12 @@ export function registerIpc(): void {
         kind: existing.kind,
         token,
       })
-      updateAccount(id, { ...resolved, label: draft.label.trim() || existing.label })
+      updateAccount(id, {
+        ...resolved,
+        label: draft.label.trim() || existing.label,
+        // Blank clears the override, so the setting applies again.
+        agentCommand: draft.agentCommand?.trim() || undefined,
+      })
       if (draft.token?.trim()) setToken(id, draft.token.trim())
       void deck.refresh()
       const updated = getAccount(id)
@@ -205,6 +213,10 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('app:openExternal', (_event, url: string) => openExternal(url))
+
+  // The renderer has no clipboard of its own worth relying on, and this keeps the
+  // handoff to one place: text in, clipboard out, nothing executed.
+  ipcMain.handle('app:copyText', (_event, text: string) => clipboard.writeText(text))
 
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),

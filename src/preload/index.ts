@@ -58,6 +58,7 @@ const api = {
   },
   app: {
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('app:openExternal', url),
+    copyText: (text: string): Promise<void> => ipcRenderer.invoke('app:copyText', text),
     info: (): Promise<{ version: string; platform: string; electron: string }> =>
       ipcRenderer.invoke('app:info'),
   },

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Check,
+  ClipboardCopy,
   Columns2,
   ExternalLink,
   FileDiff,
@@ -12,6 +13,7 @@ import {
   X,
 } from 'lucide-react'
 import type { LineCommentDraft, PullDetail, ReviewItem, ReviewVerdict } from '@shared/types'
+import { agentCommand } from '@shared/agent-prompt'
 import { cn, relativeTime } from '@/lib/utils'
 import { errorMessage, useApp } from '@/hooks/useApp'
 import { Avatar } from './ui/avatar'
@@ -30,7 +32,7 @@ import { ThreadCard } from './Thread'
 type Tab = 'diff' | 'checks' | 'conversation'
 
 export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
-  const { settings, updateSettings, refresh } = useApp()
+  const { settings, updateSettings, refresh, accountFor } = useApp()
   const toast = useToast()
 
   const [detail, setDetail] = useState<PullDetail | null>(null)
@@ -122,6 +124,16 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
     [item.id, toast],
   )
 
+  // Nothing is spawned: the command goes on the clipboard for the user to run in the
+  // terminal they already have open in that repository.
+  const copyAgentPrompt = useCallback(() => {
+    const command = agentCommand(item, detail?.threads ?? [], accountFor(item.accountId), settings)
+    void window.reviewdeck.app
+      .copyText(command)
+      .then(() => toast.ok('Claude prompt copied - paste it in your terminal.'))
+      .catch((cause: unknown) => toast.bad(errorMessage(cause)))
+  }, [accountFor, detail, item, settings, toast])
+
   const submit = useCallback(async () => {
     if (submitting) return
     setSubmitting(true)
@@ -185,10 +197,18 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
             </div>
           </div>
 
-          <Button variant="ghost" size="sm" onClick={() => openExternal(item.url)}>
-            <ExternalLink className="size-3.5" />
-            Open
-          </Button>
+          <div className="flex shrink-0 items-center gap-1">
+            <Tooltip label="Copy a prompt for your terminal" side="bottom">
+              <Button variant="ghost" size="sm" onClick={copyAgentPrompt}>
+                <ClipboardCopy className="size-3.5" />
+                Copy Claude prompt
+              </Button>
+            </Tooltip>
+            <Button variant="ghost" size="sm" onClick={() => openExternal(item.url)}>
+              <ExternalLink className="size-3.5" />
+              Open
+            </Button>
+          </div>
         </div>
 
         <nav className="mt-3 flex items-center gap-1" role="tablist">

@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { AlertTriangle, ExternalLink, Loader2, Pencil, Plus, Trash2 } from 'lucide-react'
-import { PROVIDER_LABELS, type Account, type AccountDraft, type ProviderKind } from '@shared/types'
+import {
+  DEFAULT_AGENT_COMMAND,
+  PROVIDER_LABELS,
+  type Account,
+  type AccountDraft,
+  type ProviderKind,
+} from '@shared/types'
 import { tokenCreateUrl } from '@shared/token-url'
 import { errorMessage, useApp } from '@/hooks/useApp'
 import { Avatar } from './ui/avatar'
@@ -45,7 +51,7 @@ export function AccountsDialog({
   open: boolean
   onClose: () => void
 }): React.JSX.Element {
-  const { accounts, reloadAccounts, deck } = useApp()
+  const { accounts, reloadAccounts, deck, settings } = useApp()
   const toast = useToast()
 
   const [adding, setAdding] = useState(false)
@@ -56,6 +62,7 @@ export function AccountsDialog({
   const [label, setLabel] = useState('')
   const [username, setUsername] = useState('')
   const [token, setToken] = useState('')
+  const [agentCommandOverride, setAgentCommandOverride] = useState('')
 
   const guide = GUIDES[kind]
   const formOpen = adding || editingId !== null
@@ -67,6 +74,7 @@ export function AccountsDialog({
     setToken('')
     setLabel('')
     setUsername('')
+    setAgentCommandOverride('')
   }
 
   const pickKind = (next: ProviderKind): void => {
@@ -83,13 +91,21 @@ export function AccountsDialog({
     setLabel(account.label)
     setUsername(account.kind === 'bitbucket' ? account.username : '')
     setToken('')
+    setAgentCommandOverride(account.agentCommand ?? '')
   }
 
   const save = async (): Promise<void> => {
     if (busy || !canSave) return
     setBusy(true)
     try {
-      const draft: AccountDraft = { kind, host, label: label.trim(), token: token.trim(), username: username.trim() }
+      const draft: AccountDraft = {
+        kind,
+        host,
+        label: label.trim(),
+        token: token.trim(),
+        username: username.trim(),
+        agentCommand: agentCommandOverride.trim(),
+      }
       const account = editingId
         ? await window.reviewdeck.accounts.update(editingId, draft)
         : await window.reviewdeck.accounts.add(draft)
@@ -278,6 +294,21 @@ export function AccountsDialog({
               onChange={(event) => setLabel(event.target.value)}
               placeholder="Work GitHub"
             />
+          </div>
+
+          <div>
+            <Label htmlFor="agent-command">Claude command for this account (optional)</Label>
+            <Input
+              id="agent-command"
+              value={agentCommandOverride}
+              onChange={(event) => setAgentCommandOverride(event.target.value)}
+              placeholder={settings.agentCommand || DEFAULT_AGENT_COMMAND}
+              spellCheck={false}
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Routes handoffs from this account through a different Claude configuration.
+              Leave blank to use the one in settings.
+            </p>
           </div>
         </div>
       )}

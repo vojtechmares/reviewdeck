@@ -26,6 +26,10 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
   sanitizer, so collapsible bot reports, tables and checklists read the way their author
   meant them to.
 - **Approve or request changes** from the app, plus ordinary pull-request comments.
+- **Hand a review to your agent.** One button copies a ready-to-paste Claude prompt - title,
+  base branch, open threads and the exact fetch command for that host. Nothing is spawned: it
+  is your own shell that runs it, so a shell alias works, and the command name is configurable
+  per account.
 - **CI status at a glance.** Passed / Running / Failed / Unknown per pull request, with the
   per-check breakdown, and a faster background poll while anything is still running.
 

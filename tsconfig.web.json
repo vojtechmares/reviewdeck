@@ -21,6 +21,9 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
+    // Matches tsconfig.node.json, so a shared module can import another by its real
+    // name and the same file resolves from the bundler and from the test runner.
+    "allowImportingTsExtensions": true,
     "noEmit": true,
     "baseUrl": ".",
     "paths": {

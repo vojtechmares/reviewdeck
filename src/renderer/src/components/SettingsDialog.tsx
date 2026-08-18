@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import type { Settings } from '@shared/types'
+import { DEFAULT_AGENT_COMMAND, type Settings } from '@shared/types'
 import { useApp } from '@/hooks/useApp'
 import { Dialog } from './ui/dialog'
-import { Label, Select } from './ui/input'
+import { Input, Label, Select } from './ui/input'
 import { Button } from './ui/button'
 
 export function SettingsDialog({
@@ -108,6 +108,21 @@ export function SettingsDialog({
             checked={settings.hideApproved}
             onChange={(value) => set('hideApproved', value)}
           />
+        </Section>
+
+        <Section title="Agent handoff">
+          <Field label="Command to copy">
+            <Input
+              value={settings.agentCommand}
+              placeholder={DEFAULT_AGENT_COMMAND}
+              spellCheck={false}
+              onChange={(event) => set('agentCommand', event.target.value)}
+            />
+          </Field>
+          <p className="text-[11px] text-muted-foreground">
+            Used by “Copy Claude prompt”. A shell alias works, because it is your own shell
+            that runs it - Reviewdeck only copies the text. Any account can override this.
+          </p>
         </Section>
 
         <Section title="System">

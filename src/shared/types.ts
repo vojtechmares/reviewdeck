@@ -23,6 +23,12 @@ export interface Account {
   displayName: string
   avatarUrl: string
   addedAt: string
+  /**
+   * Overrides the agent command for handoffs from this account, so a client's Git
+   * account can route through that client's Claude configuration. Blank means the
+   * setting applies.
+   */
+  agentCommand?: string
 }
 
 export interface AccountDraft {
@@ -33,6 +39,8 @@ export interface AccountDraft {
   token: string
   /** Bitbucket app passwords are tied to a username. */
   username?: string
+  /** Per-account agent command; blank clears the override. */
+  agentCommand?: string
 }
 
 export type CheckStatus = 'passed' | 'failed' | 'running' | 'unknown'
@@ -176,7 +184,15 @@ export interface Settings {
   /** Hide PRs the user has already approved. */
   hideApproved: boolean
   launchAtLogin: boolean
+  /**
+   * The command a copied agent handoff is built around. Any command or shell alias
+   * will do - it is the user's own shell that runs it, not the app.
+   */
+  agentCommand: string
 }
+
+/** Plain Claude Code, unless settings or an account say otherwise. */
+export const DEFAULT_AGENT_COMMAND = 'claude'
 
 export const DEFAULT_SETTINGS: Settings = {
   pollInterval: 180,
@@ -187,6 +203,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
   hideApproved: false,
   launchAtLogin: false,
+  agentCommand: DEFAULT_AGENT_COMMAND,
 }
 
 /**
