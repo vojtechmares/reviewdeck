@@ -42,7 +42,7 @@ import { ThreadCard } from './Thread'
 type Tab = 'diff' | 'checks' | 'conversation'
 
 export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
-  const { accounts, settings, updateSettings, refresh, accountFor } = useApp()
+  const { accounts, deck, settings, updateSettings, refresh, accountFor } = useApp()
   const toast = useToast()
 
   const [detail, setDetail] = useState<PullDetail | null>(null)
@@ -55,6 +55,9 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
   const [submitting, setSubmitting] = useState(false)
   /** The freshly loaded diff, held while the reviewer is told the author pushed. */
   const [pushed, setPushed] = useState<PullDetail | null>(null)
+  /** A review for this pull request went out somewhere else while drafts were pending. */
+  const [diverged, setDiverged] = useState(false)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
 
   // Reload whenever the selection changes; a stale diff would be worse than a spinner.
   useEffect(() => {
@@ -67,6 +70,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
     setVerdict(null)
     setBody('')
     setPushed(null)
+    setConfirmDiscard(false)
 
     // Drafts are the main process's, so they are read back rather than remembered.
     void window.reviewdeck.drafts.list(item.id).then((pending) => {
@@ -107,6 +111,21 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
     return [anchored, threads.filter((thread) => !anchored.includes(thread))]
   }, [detail])
   const inlineCount = inline.length
+
+  /**
+   * Re-read on every sync, because that is when a review submitted in a browser
+   * becomes visible: the deck's state changes, and the drafts left behind here are
+   * suddenly a second half-review nobody asked for.
+   */
+  useEffect(() => {
+    let cancelled = false
+    void window.reviewdeck.drafts.diverged(item.id).then((value) => {
+      if (!cancelled) setDiverged(value)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [item.id, deck])
 
   const openExternal = useCallback((url: string) => {
     void window.reviewdeck.app.openExternal(url)
@@ -359,7 +378,34 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
           </nav>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        {diverged && drafts.length > 0 && (
+        <aside className="shrink-0 border-b border-busy/30 bg-busy-soft px-5 py-2.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <p className="min-w-0 flex-1 text-[12.5px]">
+              <span className="font-semibold text-busy">A review went out elsewhere.</span>{' '}
+              Your review of this pull request changed without Reviewdeck sending it, and{' '}
+              {drafts.length} comment{drafts.length === 1 ? ' is' : 's are'} still drafted here.
+              Submitting now would say {drafts.length === 1 ? 'it' : 'them'} a second time.
+            </p>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  void window.reviewdeck.drafts.acknowledge(item.id).then(setDiverged)
+                }}
+              >
+                Keep drafts
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setConfirmDiscard(true)}>
+                Discard all
+              </Button>
+            </div>
+          </div>
+        </aside>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
           {loading && (
             <div className="flex h-full items-center justify-center gap-2 text-muted-foreground">
               <Loader2 className="spin size-4" />
@@ -524,6 +570,38 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
           Your comments will be sent against the diff you read, so each one lands on the code you
           were actually looking at. {PROVIDER_LABELS[item.provider]} will mark them outdated
           itself - nothing is dropped, and nothing is moved to a different line.
+        </p>
+      </Dialog>
+
+      <Dialog
+        open={confirmDiscard}
+        onClose={() => setConfirmDiscard(false)}
+        title={`Discard ${drafts.length} draft comment${drafts.length === 1 ? '' : 's'}?`}
+        className="max-w-md"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmDiscard(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setConfirmDiscard(false)
+                void window.reviewdeck.drafts.discard(item.id).then((remaining) => {
+                  setDrafts(remaining)
+                  setDiverged(false)
+                  toast.info('Drafts discarded.')
+                })
+              }}
+            >
+              Discard them
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[13px] leading-relaxed">
+          They are only here - nothing has been sent to {PROVIDER_LABELS[item.provider]} - so this
+          cannot be undone.
         </p>
       </Dialog>
     </MarkdownLinks>

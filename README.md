@@ -186,8 +186,9 @@ This is an MVP.
   creation. GitLab and Bitbucket have no such call, so their comments post one at a time; if that
   stops part-way it says which landed, and the ones that did not stay drafted so retrying finishes
   the review rather than repeating it.
-- Drafts are the app's own, so they are invisible to the host: drafting here and reviewing the
-  same pull request in a browser produces two half-reviews with nothing reconciling them.
+- Drafts are the app's own, so they are invisible to the host. Reviewdeck notices when your review
+  of a pull request changes without it having sent anything and says so, but it cannot reconcile
+  the two halves for you - it offers to keep the drafts or discard them.
 
 Features are implemented here rather than pulled in, with one standing exception: parsing
 and rendering content that other people wrote. Markdown goes through `react-markdown`,

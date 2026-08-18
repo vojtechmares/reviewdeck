@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DraftStore, type NewDraft } from '../src/main/drafts.ts'
+import { DraftStore, hasDiverged, type DraftState, type NewDraft } from '../src/main/drafts.ts'
 import { draftedHeads, headMoved } from '../src/shared/drafts.ts'
 import type { DraftComment } from '../src/shared/types.ts'
 
@@ -9,12 +9,12 @@ const REFS = { baseSha: 'base1', startSha: 'start1', headSha: 'head1' }
 function store(
   initial: DraftComment[] = [],
   debounceMs = 5,
-): { store: DraftStore; saved: DraftComment[][] } {
-  const saved: DraftComment[][] = []
+): { store: DraftStore; saved: DraftState[] } {
+  const saved: DraftState[] = []
   let tick = 0
   const store = new DraftStore({
-    load: () => initial,
-    save: (drafts) => saved.push(drafts),
+    load: () => ({ comments: initial, sets: {} }),
+    save: (state) => saved.push(state),
     debounceMs,
     now: () => `2026-08-05T10:00:${String(tick++).padStart(2, '0')}Z`,
     id: () => `d${tick}`,
@@ -124,7 +124,7 @@ test('writing does not touch the store per keystroke', () => {
 
   drafts.flush()
   assert.equal(saved.length, 1, 'one write for the lot')
-  assert.equal(saved[0][0].body, 'abcde')
+  assert.equal(saved[0].comments[0].body, 'abcde')
 })
 
 test('the debounced write does land on its own', async () => {
@@ -134,7 +134,7 @@ test('the debounced write does land on its own', async () => {
   await new Promise((resolve) => setTimeout(resolve, 30))
 
   assert.equal(saved.length, 1)
-  assert.equal(saved[0][0].body, 'a')
+  assert.equal(saved[0].comments[0].body, 'a')
 })
 
 test('drafts written before a restart are there afterwards', () => {
@@ -142,7 +142,10 @@ test('drafts written before a restart are there afterwards', () => {
   first.add(draft('item', 'survives'))
   first.flush()
 
-  const reopened = new DraftStore({ load: () => saved.at(-1) ?? [], save: () => {} })
+  const reopened = new DraftStore({
+    load: () => saved.at(-1) ?? { comments: [], sets: {} },
+    save: () => {},
+  })
 
   assert.deepEqual(
     reopened.list('item').map((entry) => entry.body),
@@ -195,4 +198,145 @@ test('draftedHeads names each head once, in the order it was first written again
   )
   assert.deepEqual(draftedHeads([written(undefined)]), [])
   assert.deepEqual(draftedHeads([]), [])
+})
+
+const APPROVED = 'approved' as const
+const PENDING = 'pending' as const
+
+test('hasDiverged reports a review the reviewer submitted somewhere else', () => {
+  assert.equal(
+    hasDiverged({
+      baseline: PENDING,
+      current: APPROVED,
+      submissionsAtSyncStart: 0,
+      submissionsNow: 0,
+    }),
+    true,
+  )
+})
+
+test('hasDiverged says nothing when the state has not moved', () => {
+  assert.equal(
+    hasDiverged({ baseline: PENDING, current: PENDING, submissionsAtSyncStart: 3, submissionsNow: 3 }),
+    false,
+  )
+})
+
+test('hasDiverged says nothing without a baseline to compare against', () => {
+  assert.equal(
+    hasDiverged({
+      baseline: undefined,
+      current: APPROVED,
+      submissionsAtSyncStart: 0,
+      submissionsNow: 0,
+    }),
+    false,
+  )
+})
+
+test('hasDiverged never reports this app own submission as somebody else', () => {
+  // A sync that began before the submission is holding the state from before it.
+  // Reading that as a divergence would accuse the reviewer of their own review.
+  assert.equal(
+    hasDiverged({
+      baseline: APPROVED,
+      current: PENDING,
+      submissionsAtSyncStart: 0,
+      submissionsNow: 1,
+    }),
+    false,
+  )
+})
+
+test('a draft set takes its baseline from the state when it began', () => {
+  const { store: drafts } = store()
+
+  drafts.add(draft('item', 'first'), PENDING)
+  // A later draft does not move the baseline the set started from.
+  drafts.add(draft('item', 'second'), APPROVED)
+
+  assert.equal(drafts.reconcile('item', PENDING, 0), false)
+  assert.equal(drafts.reconcile('item', APPROVED, 0), true)
+  assert.equal(drafts.diverged('item'), true)
+})
+
+test('a set created after an external change starts from what is there now', () => {
+  // The reviewer approved in a browser, then came back and started drafting. The
+  // change is already reflected, so there is nothing to reconcile.
+  const { store: drafts } = store()
+  drafts.add(draft('item', 'written after the fact'), APPROVED)
+
+  assert.equal(drafts.reconcile('item', APPROVED, 0), false)
+  assert.equal(drafts.diverged('item'), false)
+})
+
+test('an item with no drafts never reports divergence', () => {
+  const { store: drafts } = store()
+
+  assert.equal(drafts.reconcile('untouched', APPROVED, 0), false)
+  assert.equal(drafts.diverged('untouched'), false)
+
+  // Nor once its drafts are gone.
+  drafts.add(draft('item', 'one'), PENDING)
+  drafts.reconcile('item', APPROVED, 0)
+  assert.equal(drafts.diverged('item'), true)
+  drafts.clear('item')
+  assert.equal(drafts.diverged('item'), false)
+})
+
+test('the app own submission rebaselines instead of diverging', () => {
+  const { store: drafts } = store()
+  drafts.add(draft('item', 'one'), PENDING)
+
+  const before = drafts.submissions()
+  drafts.recordSubmission('item', APPROVED)
+  assert.equal(drafts.submissions(), before + 1)
+
+  // A sync that started before it is ignored, and the state it settled on is the
+  // new baseline, so the next sync agrees.
+  assert.equal(drafts.reconcile('item', PENDING, before), false)
+  assert.equal(drafts.reconcile('item', APPROVED, drafts.submissions()), false)
+  assert.equal(drafts.diverged('item'), false)
+})
+
+test('keeping drafts clears the mark and touches not one character of them', () => {
+  const { store: drafts } = store()
+  drafts.add(draft('item', 'a carefully worded remark'), PENDING)
+  drafts.reconcile('item', APPROVED, 0)
+  assert.equal(drafts.diverged('item'), true)
+
+  const before = drafts.list('item')
+  drafts.acknowledge('item', APPROVED)
+
+  assert.equal(drafts.diverged('item'), false)
+  assert.deepEqual(drafts.list('item'), before)
+
+  // And the same change is not reported a second time.
+  assert.equal(drafts.reconcile('item', APPROVED, 0), false)
+})
+
+test('the diverged mark is written down, so it is still there after a restart', () => {
+  const { store: first, saved } = store()
+  first.add(draft('item', 'one'), PENDING)
+  first.reconcile('item', APPROVED, 0)
+  first.flush()
+
+  const reopened = new DraftStore({
+    load: () => saved.at(-1) ?? { comments: [], sets: {} },
+    save: () => {},
+  })
+
+  assert.equal(reopened.diverged('item'), true)
+  assert.equal(reopened.count('item'), 1)
+})
+
+test('divergence is per item and does not spread', () => {
+  const { store: drafts } = store()
+  drafts.add(draft('item-a', 'one'), PENDING)
+  drafts.add(draft('item-b', 'two'), PENDING)
+
+  drafts.reconcile('item-a', APPROVED, 0)
+
+  assert.equal(drafts.diverged('item-a'), true)
+  assert.equal(drafts.diverged('item-b'), false)
 })

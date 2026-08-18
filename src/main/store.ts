@@ -5,6 +5,7 @@
  */
 
 import { app, safeStorage } from 'electron'
+import type { DraftSet, DraftState } from './drafts.ts'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -26,6 +27,8 @@ interface Vault {
   seen: string[]
   /** Line comments written but not yet submitted, across every pull request. */
   drafts: DraftComment[]
+  /** What is known about each item's draft set beyond the text: baseline, divergence. */
+  draftSets: Record<string, DraftSet>
 }
 
 const EMPTY: Vault = {
@@ -35,6 +38,7 @@ const EMPTY: Vault = {
   settings: { ...DEFAULT_SETTINGS },
   seen: [],
   drafts: [],
+  draftSets: {},
 }
 
 let cache: Vault | null = null
@@ -61,6 +65,7 @@ function load(): Vault {
       settings: mergeSettings(parsed.settings),
       seen: parsed.seen ?? [],
       drafts: parsed.drafts ?? [],
+      draftSets: parsed.draftSets ?? {},
     }
   } catch (error) {
     // A corrupt file should not brick the app; keep the bad copy for forensics.
@@ -129,12 +134,15 @@ export function setToken(id: string, token: string): void {
   persist()
 }
 
-export function loadDrafts(): DraftComment[] {
-  return load().drafts
+export function loadDraftState(): DraftState {
+  const vault = load()
+  return { comments: vault.drafts, sets: vault.draftSets }
 }
 
-export function persistDrafts(drafts: DraftComment[]): void {
-  load().drafts = drafts
+export function persistDraftState(state: DraftState): void {
+  const vault = load()
+  vault.drafts = state.comments
+  vault.draftSets = state.sets
   persist()
 }
 

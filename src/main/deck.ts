@@ -6,6 +6,7 @@
 
 import { BrowserWindow, Notification, shell } from 'electron'
 import { EventEmitter } from 'node:events'
+import { drafts } from './draft-store.ts'
 import { providerFor } from './providers/index.ts'
 import { limitConcurrency } from './providers/types.ts'
 import { DEMO_ITEMS, demoEnabled } from './demo.ts'
@@ -100,14 +101,32 @@ class Deck extends EventEmitter {
     this.syncing = true
     this.publish()
 
+    // Captured before the fetch: if the app submits while this is in flight, the
+    // states coming back predate it and must not be read as somebody else's review.
+    const submissionsAtStart = drafts.submissions()
+
     await Promise.all(accounts.map((account) => this.refreshAccount(account)))
 
+    this.reconcileDrafts(submissionsAtStart)
     this.syncing = false
     this.lastSyncedAt = new Date().toISOString()
     this.announceNew()
     this.publish()
     this.scheduleCheckPoll()
     return this.state()
+  }
+
+  /**
+   * Notices a review the reviewer submitted somewhere else.
+   *
+   * Only items with drafts are worth looking at - with nothing pending there is
+   * nothing to reconcile, and the card already shows the new state.
+   */
+  private reconcileDrafts(submissionsAtStart: number): void {
+    for (const item of this.items()) {
+      if (!drafts.count(item.id)) continue
+      drafts.reconcile(item.id, item.myReviewState, submissionsAtStart)
+    }
   }
 
   private async refreshAccount(account: Account): Promise<void> {

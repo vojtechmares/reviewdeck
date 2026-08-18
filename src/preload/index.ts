@@ -59,6 +59,11 @@ const api = {
     update: (id: string, body: string): Promise<DraftComment[]> =>
       ipcRenderer.invoke('drafts:update', id, body),
     remove: (id: string): Promise<DraftComment[]> => ipcRenderer.invoke('drafts:remove', id),
+    diverged: (itemId: string): Promise<boolean> => ipcRenderer.invoke('drafts:diverged', itemId),
+    acknowledge: (itemId: string): Promise<boolean> =>
+      ipcRenderer.invoke('drafts:acknowledge', itemId),
+    discard: (itemId: string): Promise<DraftComment[]> =>
+      ipcRenderer.invoke('drafts:discard', itemId),
   },
   settings: {
     get: (): Promise<Settings> => ipcRenderer.invoke('settings:get'),

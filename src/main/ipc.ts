@@ -2,7 +2,8 @@
 
 import { app, clipboard, ipcMain, nativeTheme } from 'electron'
 import { deck, openExternal } from './deck.ts'
-import { DraftStore, type NewDraft } from './drafts.ts'
+import { drafts } from './draft-store.ts'
+import { type NewDraft } from './drafts.ts'
 import { DEMO_ACCOUNTS, demoDetail, demoEnabled } from './demo.ts'
 import { providerFor } from './providers/index.ts'
 import { PartialSubmitError } from './providers/submit.ts'
@@ -12,8 +13,6 @@ import {
   getSettings,
   getToken,
   listAccounts,
-  loadDrafts,
-  persistDrafts,
   removeAccount,
   saveSettings,
   setToken,
@@ -34,9 +33,6 @@ function fail(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error)
   throw new Error(message)
 }
-
-/** Drafts live for the life of the process and are written on a debounce. */
-const drafts = new DraftStore({ load: loadDrafts, save: persistDrafts })
 
 /** Write anything still pending before the process goes away. */
 export function flushDrafts(): void {
@@ -154,19 +150,26 @@ export function registerIpc(): void {
         // first half of it twice.
         if (error instanceof PartialSubmitError) {
           for (const posted of error.posted) drafts.remove(posted.id)
+          // Part of the review did go out, so what is left starts again from here
+          // rather than reading as a review somebody else submitted.
+          drafts.recordSubmission(item.id, item.myReviewState)
         }
         throw error
       }
+
+      const state =
+        submission.verdict === 'approve'
+          ? 'approved'
+          : submission.verdict === 'request_changes'
+            ? 'changes_requested'
+            : 'commented'
+
+      // Before clearing, so a sync already in flight cannot report this app's own
+      // review as one submitted elsewhere.
+      drafts.recordSubmission(item.id, state)
       // Only now: a submission that threw outright leaves every draft where it was.
       drafts.clear(item.id)
-      deck.patch(item.id, {
-        myReviewState:
-          submission.verdict === 'approve'
-            ? 'approved'
-            : submission.verdict === 'request_changes'
-              ? 'changes_requested'
-              : 'commented',
-      })
+      deck.patch(item.id, { myReviewState: state })
     } catch (error) {
       fail(error)
     }
@@ -226,7 +229,9 @@ export function registerIpc(): void {
     try {
       if (!deck.find(draft.itemId)) throw new Error('That pull request is no longer in the deck.')
       if (!draft.body.trim()) throw new Error('The comment is empty.')
-      drafts.add({ ...draft, body: draft.body.trim() })
+
+      const item = deck.find(draft.itemId)
+      drafts.add({ ...draft, body: draft.body.trim() }, item?.myReviewState)
       return drafts.list(draft.itemId)
     } catch (error) {
       fail(error)
@@ -242,6 +247,21 @@ export function registerIpc(): void {
     } catch (error) {
       fail(error)
     }
+  })
+
+  ipcMain.handle('drafts:diverged', (_event, itemId: string): boolean => drafts.diverged(itemId))
+
+  /** Keep the drafts: the mark goes and not one character of them is touched. */
+  ipcMain.handle('drafts:acknowledge', (_event, itemId: string): boolean => {
+    const item = deck.find(itemId)
+    drafts.acknowledge(itemId, item?.myReviewState ?? 'pending')
+    return drafts.diverged(itemId)
+  })
+
+  /** Discard them: only ever reached through an explicit confirmation in the app. */
+  ipcMain.handle('drafts:discard', (_event, itemId: string): DraftComment[] => {
+    drafts.clear(itemId)
+    return drafts.list(itemId)
   })
 
   ipcMain.handle('drafts:remove', (_event, id: string): DraftComment[] => {
