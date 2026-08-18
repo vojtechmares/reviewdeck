@@ -62,7 +62,7 @@ export function ToastProvider({ children }: { children: ReactNode }): React.JSX.
             <div
               key={toast.id}
               role="status"
-              className="glass-strong rise pointer-events-auto flex items-start gap-2.5 rounded-lg px-3 py-2.5"
+              className="glass-overlay rise pointer-events-auto flex items-start gap-2.5 rounded-lg px-3 py-2.5"
             >
               <Icon className={cn('mt-px size-4 shrink-0', TONES[toast.tone])} />
               <p className="min-w-0 flex-1 text-[12.5px] leading-snug break-words">{toast.message}</p>

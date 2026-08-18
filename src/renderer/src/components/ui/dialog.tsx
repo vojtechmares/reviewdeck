@@ -79,14 +79,14 @@ export function Dialog({
         if (event.target === event.currentTarget) onClose()
       }}
     >
-      <div className="absolute inset-0 bg-black/25 backdrop-blur-[3px]" />
+      <div className="scrim absolute inset-0" />
       <div
         ref={panel}
         role="dialog"
         aria-modal="true"
         aria-label={title}
         className={cn(
-          'glass-strong rise relative flex max-h-full w-full max-w-lg flex-col rounded-xl',
+          'glass-overlay rise relative flex max-h-full w-full max-w-lg flex-col rounded-xl',
           className,
         )}
       >

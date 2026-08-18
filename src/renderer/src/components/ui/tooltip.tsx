@@ -28,7 +28,7 @@ export function Tooltip({
         <span
           role="tooltip"
           className={cn(
-            'glass-strong pointer-events-none absolute left-1/2 z-50 -translate-x-1/2 rounded-md px-2 py-1',
+            'glass-overlay pointer-events-none absolute left-1/2 z-50 -translate-x-1/2 rounded-md px-2 py-1',
             'max-w-72 text-[11.5px] leading-snug font-medium text-foreground whitespace-pre-line',
             side === 'bottom' ? 'top-[calc(100%+6px)]' : 'bottom-[calc(100%+6px)]',
             className,

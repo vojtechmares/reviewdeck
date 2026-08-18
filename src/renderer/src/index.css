@@ -35,6 +35,12 @@
 
   --highlight: oklch(1 0 0 / 0.6);
 
+  /* Floating layers ride over the app's own UI, so they need a far thicker film. */
+  --overlay: oklch(0.985 0.004 265 / 0.95);
+  --overlay-border: oklch(0.35 0.01 265 / 0.16);
+  --overlay-shadow: oklch(0.2 0.02 265 / 0.3);
+  --scrim: oklch(0.32 0.012 265 / 0.38);
+
   --ok: oklch(0.62 0.14 155);
   --ok-soft: oklch(0.62 0.14 155 / 0.14);
   --bad: oklch(0.58 0.19 25);
@@ -76,6 +82,11 @@
   --ring: oklch(0.8 0.01 265 / 0.4);
 
   --highlight: oklch(1 0 0 / 0.12);
+
+  --overlay: oklch(0.245 0.007 265 / 0.95);
+  --overlay-border: oklch(1 0 0 / 0.14);
+  --overlay-shadow: oklch(0.05 0.01 265 / 0.65);
+  --scrim: oklch(0.12 0.008 265 / 0.55);
 
   --ok: oklch(0.76 0.15 155);
   --ok-soft: oklch(0.76 0.15 155 / 0.16);
@@ -194,27 +205,37 @@
   .glass {
     background: var(--surface);
     backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
     border: 1px solid var(--border);
     box-shadow:
       0 1px 0 0 var(--highlight) inset,
       0 8px 28px -14px oklch(0.2 0.02 265 / 0.35);
   }
 
-  .glass-strong {
-    background: var(--surface-strong);
-    backdrop-filter: blur(30px) saturate(190%);
-    -webkit-backdrop-filter: blur(30px) saturate(190%);
-    border: 1px solid var(--border-strong);
+  /*
+   * Dialogs, popovers, tooltips and toasts float over the app's own UI, not over
+   * the desktop, so the thin film that suits window chrome would leave the list
+   * behind them legible through the panel. These take a near-opaque film and a
+   * deep blur instead: sanded glass rather than window glass.
+   */
+  .glass-overlay {
+    background: var(--overlay);
+    backdrop-filter: blur(44px) saturate(150%);
+    border: 1px solid var(--overlay-border);
     box-shadow:
       0 1px 0 0 var(--highlight) inset,
-      0 18px 48px -20px oklch(0.2 0.02 265 / 0.45);
+      0 4px 12px -6px var(--overlay-shadow),
+      0 24px 60px -18px var(--overlay-shadow);
+  }
+
+  /* The dimmed, defocused layer a modal lays over everything beneath it. */
+  .scrim {
+    background: var(--scrim);
+    backdrop-filter: blur(10px) saturate(110%);
   }
 
   .glass-quiet {
     background: var(--surface-muted);
     backdrop-filter: blur(16px) saturate(150%);
-    -webkit-backdrop-filter: blur(16px) saturate(150%);
     border: 1px solid var(--border);
   }
 
