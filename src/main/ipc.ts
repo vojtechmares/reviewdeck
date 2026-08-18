@@ -2,6 +2,7 @@
 
 import { app, clipboard, ipcMain, nativeTheme } from 'electron'
 import { deck, openExternal } from './deck.ts'
+import { DraftStore, type NewDraft } from './drafts.ts'
 import { DEMO_ACCOUNTS, demoDetail, demoEnabled } from './demo.ts'
 import { providerFor } from './providers/index.ts'
 import {
@@ -10,6 +11,8 @@ import {
   getSettings,
   getToken,
   listAccounts,
+  loadDrafts,
+  persistDrafts,
   removeAccount,
   saveSettings,
   setToken,
@@ -19,7 +22,7 @@ import { PROVIDER_LABELS } from '@shared/types.ts'
 import type {
   Account,
   AccountDraft,
-  LineCommentDraft,
+  DraftComment,
   PullDetail,
   ReviewSubmission,
   Settings,
@@ -29,6 +32,14 @@ import type {
 function fail(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error)
   throw new Error(message)
+}
+
+/** Drafts live for the life of the process and are written on a debounce. */
+const drafts = new DraftStore({ load: loadDrafts, save: persistDrafts })
+
+/** Write anything still pending before the process goes away. */
+export function flushDrafts(): void {
+  drafts.flush()
 }
 
 export function registerIpc(): void {
@@ -123,7 +134,20 @@ export function registerIpc(): void {
       const item = deck.find(submission.itemId)
       if (!item) throw new Error('That pull request is no longer in the deck.')
       const provider = providerFor(item.provider)
-      await provider.submitReview(deck.session(item.accountId), item, submission.verdict, submission.body)
+      const pending = drafts.list(item.id)
+      if (!pending.length && !submission.body.trim() && submission.verdict !== 'approve') {
+        throw new Error('There is nothing to submit.')
+      }
+
+      await provider.submitReview(
+        deck.session(item.accountId),
+        item,
+        submission.verdict,
+        submission.body,
+        pending,
+      )
+      // Only now: a submission that threw must leave every draft where it was.
+      drafts.clear(item.id)
       deck.patch(item.id, {
         myReviewState:
           submission.verdict === 'approve'
@@ -185,19 +209,34 @@ export function registerIpc(): void {
     },
   )
 
-  ipcMain.handle(
-    'pull:lineComment',
-    async (_event, draft: LineCommentDraft, refs: PullDetail['refs']) => {
-      try {
-        const item = deck.find(draft.itemId)
-        if (!item) throw new Error('That pull request is no longer in the deck.')
-        if (!draft.body.trim()) throw new Error('The comment is empty.')
-        await providerFor(item.provider).addLineComment(deck.session(item.accountId), item, draft, refs)
-      } catch (error) {
-        fail(error)
-      }
-    },
-  )
+  ipcMain.handle('drafts:list', (_event, itemId: string): DraftComment[] => drafts.list(itemId))
+
+  ipcMain.handle('drafts:add', (_event, draft: NewDraft): DraftComment[] => {
+    try {
+      if (!deck.find(draft.itemId)) throw new Error('That pull request is no longer in the deck.')
+      if (!draft.body.trim()) throw new Error('The comment is empty.')
+      drafts.add({ ...draft, body: draft.body.trim() })
+      return drafts.list(draft.itemId)
+    } catch (error) {
+      fail(error)
+    }
+  })
+
+  ipcMain.handle('drafts:update', (_event, id: string, body: string): DraftComment[] => {
+    try {
+      if (!body.trim()) throw new Error('The comment is empty.')
+      const updated = drafts.update(id, body.trim())
+      if (!updated) throw new Error('That draft is gone.')
+      return drafts.list(updated.itemId)
+    } catch (error) {
+      fail(error)
+    }
+  })
+
+  ipcMain.handle('drafts:remove', (_event, id: string): DraftComment[] => {
+    const removed = drafts.remove(id)
+    return removed ? drafts.list(removed.itemId) : []
+  })
 
   ipcMain.handle('settings:get', (): Settings => getSettings())
 

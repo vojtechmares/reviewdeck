@@ -292,7 +292,25 @@ export const forgejo: Provider = {
     return loadChecks(session, item.repoKey, pull.head.sha, signal)
   },
 
-  async submitReview(session, item, verdict, body) {
+  async submitReview(session, item, verdict, body, comments) {
+    // One post per comment, in the order they were written. This host has no call
+    // that takes a review and its comments together, so batching them into one
+    // request is its own piece of work; sending them is the part that matters here.
+    for (const comment of comments) {
+      await this.addLineComment(
+        session,
+        item,
+        {
+          itemId: item.id,
+          body: comment.body,
+          path: comment.path,
+          newLine: comment.newLine,
+          oldLine: comment.oldLine,
+        },
+        comment.refs,
+      )
+    }
+
     const event =
       verdict === 'approve' ? 'APPROVED' : verdict === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT'
     await request(api(session, `/repos/${item.repoKey}/pulls/${item.number}/reviews`), {

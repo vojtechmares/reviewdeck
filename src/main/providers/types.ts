@@ -2,6 +2,7 @@ import type {
   Account,
   AccountDraft,
   CheckStatus,
+  DraftComment,
   LineCommentDraft,
   PullDetail,
   ReviewItem,
@@ -24,7 +25,18 @@ export interface Provider {
   loadDetail(session: Session, item: ReviewItem, signal?: AbortSignal): Promise<PullDetail>
   /** Re-read just the CI status, for the running-checks poll. */
   refreshChecks(session: Session, item: ReviewItem, signal?: AbortSignal): Promise<ReviewItem['checks']>
-  submitReview(session: Session, item: ReviewItem, verdict: ReviewVerdict, body: string): Promise<void>
+  /**
+   * Submit a review. `comments` are the drafts written against this pull request,
+   * which each adapter maps onto its host's batch call where one exists and onto
+   * sequential posts where it does not.
+   */
+  submitReview(
+    session: Session,
+    item: ReviewItem,
+    verdict: ReviewVerdict,
+    body: string,
+    comments: DraftComment[],
+  ): Promise<void>
   addComment(session: Session, item: ReviewItem, body: string): Promise<void>
   addLineComment(session: Session, item: ReviewItem, draft: LineCommentDraft, refs: PullDetail['refs']): Promise<void>
   /**

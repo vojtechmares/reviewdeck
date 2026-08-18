@@ -162,6 +162,26 @@ export interface ReviewSubmission {
   body: string
 }
 
+/**
+ * A line comment written but not yet sent.
+ *
+ * Drafts are owned by the main process and carry the diff references they were
+ * written against, so they can be submitted against the code that was actually
+ * read rather than against whatever the branch looks like by then.
+ */
+export interface DraftComment {
+  id: string
+  itemId: string
+  body: string
+  path: string
+  /** Line in the file after the change, when the comment is on an added or context line. */
+  newLine?: number
+  /** Line in the file before the change, when the comment is on a removed line. */
+  oldLine?: number
+  createdAt: string
+  refs: DiffRefs
+}
+
 export interface LineCommentDraft {
   itemId: string
   body: string

@@ -27,6 +27,9 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
 - **Descriptions and comments as Markdown**, GitHub-flavoured and rendered through a
   sanitizer, so collapsible bot reports, tables and checklists read the way their author
   meant them to.
+- **A pending review.** Line comments accumulate as drafts you can edit and drop, kept per pull
+  request and across restarts, and submitted together with one verdict - so the author gets one
+  coherent review instead of a notification per remark.
 - **Approve or request changes** from the app, plus ordinary pull-request comments.
 - **Hand a review to your agent.** One button copies a ready-to-paste Claude prompt - title,
   base branch, open threads and the exact fetch command for that host. Nothing is spawned: it
@@ -105,6 +108,7 @@ src/
 ├── main/                 Node side: no UI, owns all network and all secrets
 │   ├── index.ts          window, tray, menu, lifecycle
 │   ├── deck.ts           the sync engine: fan-out, notifications, check polling
+│   ├── drafts.ts         unsubmitted line comments, held in memory, written on a debounce
 │   ├── store.ts          accounts + settings on disk, tokens via safeStorage
 │   ├── http.ts           fetch wrapper: timeouts, pagination, readable errors
 │   ├── ipc.ts            every channel the renderer may call
@@ -175,6 +179,11 @@ This is an MVP.
 - Syntax highlighting covers a common set of languages; a file outside it reads as plain text.
 - Resolving a thread works everywhere except Forgejo, whose REST API has no endpoint for it at
   all - so the control is hidden there rather than offered and failed.
+- Submitting a review sends its comments in one call on GitHub, which takes them on review
+  creation. The other three post them one at a time, because none of them has a call that takes a
+  review and its comments together.
+- Drafts are the app's own, so they are invisible to the host: drafting here and reviewing the
+  same pull request in a browser produces two half-reviews with nothing reconciling them.
 
 Features are implemented here rather than pulled in, with one standing exception: parsing
 and rendering content that other people wrote. Markdown goes through `react-markdown`,

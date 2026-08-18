@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, nativeTheme, shell, Tray, nativeImage } from 
 import { join } from 'node:path'
 import { deck } from './deck.ts'
 import { registerImageScheme, serveImages } from './images.ts'
-import { registerIpc } from './ipc.ts'
+import { flushDrafts, registerIpc } from './ipc.ts'
 import { getSettings } from './store.ts'
 
 const isDev = !app.isPackaged
@@ -201,5 +201,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     deck.stop()
+    // Anything the debounce was still holding, before the process goes away.
+    flushDrafts()
   })
 }

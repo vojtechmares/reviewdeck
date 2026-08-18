@@ -279,7 +279,25 @@ export const bitbucket: Provider = {
     return loadChecks(session, item.repoKey, item.number, signal)
   },
 
-  async submitReview(session, item, verdict, body) {
+  async submitReview(session, item, verdict, body, comments) {
+    // One post per comment, in the order they were written. This host has no call
+    // that takes a review and its comments together, so batching them into one
+    // request is its own piece of work; sending them is the part that matters here.
+    for (const comment of comments) {
+      await this.addLineComment(
+        session,
+        item,
+        {
+          itemId: item.id,
+          body: comment.body,
+          path: comment.path,
+          newLine: comment.newLine,
+          oldLine: comment.oldLine,
+        },
+        comment.refs,
+      )
+    }
+
     const base = `${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}`
     if (verdict === 'approve') {
       // Clear any standing "request changes" first, otherwise both flags linger.

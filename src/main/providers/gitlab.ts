@@ -299,7 +299,25 @@ export const gitlab: Provider = {
     return loadChecks(session, item.repoKey, item.number, signal)
   },
 
-  async submitReview(session, item, verdict, body) {
+  async submitReview(session, item, verdict, body, comments) {
+    // One post per comment, in the order they were written. This host has no call
+    // that takes a review and its comments together, so batching them into one
+    // request is its own piece of work; sending them is the part that matters here.
+    for (const comment of comments) {
+      await this.addLineComment(
+        session,
+        item,
+        {
+          itemId: item.id,
+          body: comment.body,
+          path: comment.path,
+          newLine: comment.newLine,
+          oldLine: comment.oldLine,
+        },
+        comment.refs,
+      )
+    }
+
     // GitLab has no single "submit review" call: approval and the note are separate.
     if (verdict === 'approve') {
       await request(api(session, `/projects/${project(item)}/merge_requests/${item.number}/approve`), {

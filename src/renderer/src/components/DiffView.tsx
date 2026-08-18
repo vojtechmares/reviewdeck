@@ -2,11 +2,12 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type R
 import { ChevronRight, FilePlus2, FileMinus2, FileSymlink, MessageSquarePlus, Plus } from 'lucide-react'
 import { parsePatch, toSplitRows, type DiffHunk, type DiffLine } from '@shared/diff'
 import { languageFor } from '@shared/highlight'
-import type { CommentThread, DiffFile, LineCommentDraft } from '@shared/types'
+import type { CommentThread, DiffFile, DraftComment, LineCommentDraft } from '@shared/types'
 import { highlightHunks, type Token } from '@/lib/highlight'
 import { cn } from '@/lib/utils'
 import { Button } from './ui/button'
 import { Textarea } from './ui/input'
+import { DraftCard, type DraftActions } from './Draft'
 import { ThreadCard } from './Thread'
 
 /** Files past this many lines start collapsed so opening a big PR stays instant. */
@@ -29,8 +30,9 @@ const EAGER_FILES = 2
 const ESTIMATED_ROW_HEIGHT = 19
 const ESTIMATED_HUNK_HEADER_HEIGHT = 27
 
-/** Shared so a file without threads keeps the same array across renders. */
+/** Shared so a file without threads or drafts keeps the same array across renders. */
 const NO_THREADS: CommentThread[] = []
+const NO_DRAFTS: DraftComment[] = []
 
 export interface CommentTarget {
   path: string
@@ -41,19 +43,23 @@ export interface CommentTarget {
 interface DiffViewProps {
   files: DiffFile[]
   threads: CommentThread[]
+  drafts: DraftComment[]
   mode: 'split' | 'unified'
   onComment: (draft: Omit<LineCommentDraft, 'itemId'>) => Promise<void>
   onReply: (threadId: string, body: string) => Promise<void>
   onResolve: (threadId: string, resolved: boolean) => Promise<void>
+  draftActions: DraftActions
 }
 
 export function DiffView({
   files,
   threads,
+  drafts,
   mode,
   onComment,
   onReply,
   onResolve,
+  draftActions,
 }: DiffViewProps): React.JSX.Element {
   const byPath = useMemo(() => {
     const map = new Map<string, CommentThread[]>()
@@ -65,6 +71,16 @@ export function DiffView({
     }
     return map
   }, [threads])
+
+  const draftsByPath = useMemo(() => {
+    const map = new Map<string, DraftComment[]>()
+    for (const draft of drafts) {
+      const list = map.get(draft.path) ?? []
+      list.push(draft)
+      map.set(draft.path, list)
+    }
+    return map
+  }, [drafts])
 
   if (!files.length) {
     return (
@@ -82,10 +98,12 @@ export function DiffView({
           file={file}
           index={index}
           threads={byPath.get(file.path) ?? NO_THREADS}
+          drafts={draftsByPath.get(file.path) ?? NO_DRAFTS}
           mode={mode}
           onComment={onComment}
           onReply={onReply}
           onResolve={onResolve}
+          draftActions={draftActions}
         />
       ))}
     </div>
@@ -146,18 +164,22 @@ function FileBlock({
   file,
   index,
   threads,
+  drafts,
   mode,
   onComment,
   onReply,
   onResolve,
+  draftActions,
 }: {
   file: DiffFile
   index: number
   threads: CommentThread[]
+  drafts: DraftComment[]
   mode: 'split' | 'unified'
   onComment: DiffViewProps['onComment']
   onReply: DiffViewProps['onReply']
   onResolve: DiffViewProps['onResolve']
+  draftActions: DraftActions
 }): React.JSX.Element {
   const hunks = useMemo(() => parsePatch(file.patch ?? ''), [file.patch])
   const lineCount = useMemo(
@@ -193,7 +215,7 @@ function FileBlock({
     // position by a pixel a time across a long diff.
     const height = rows.current?.getBoundingClientRect().height ?? 0
     if (height > 0) setMeasuredHeight((current) => (current === height ? current : height))
-  }, [rendered, mode, hunks, threads, tokens])
+  }, [rendered, mode, hunks, threads, drafts, tokens])
 
   const Icon =
     file.status === 'added'
@@ -251,11 +273,13 @@ function FileBlock({
                   path={file.path}
                   tokens={tokens}
                   threads={threads}
+                  drafts={drafts}
                   target={target}
                   setTarget={setTarget}
                   onComment={onComment}
                   onReply={onReply}
                   onResolve={onResolve}
+                  draftActions={draftActions}
                 />
               ) : (
                 <UnifiedHunks
@@ -263,11 +287,13 @@ function FileBlock({
                   path={file.path}
                   tokens={tokens}
                   threads={threads}
+                  drafts={drafts}
                   target={target}
                   setTarget={setTarget}
                   onComment={onComment}
                   onReply={onReply}
                   onResolve={onResolve}
+                  draftActions={draftActions}
                 />
               )}
             </div>
@@ -296,11 +322,21 @@ interface HunkTableProps {
   path: string
   tokens: Map<DiffLine, Token[]> | null
   threads: CommentThread[]
+  drafts: DraftComment[]
   target: CommentTarget | null
   setTarget: (target: CommentTarget | null) => void
   onComment: DiffViewProps['onComment']
   onReply: DiffViewProps['onReply']
   onResolve: DiffViewProps['onResolve']
+  draftActions: DraftActions
+}
+
+/** The drafts left on one line, on whichever side of the diff it is. */
+function draftsOn(drafts: DraftComment[], line: DiffLine | undefined): DraftComment[] {
+  if (!line) return []
+  return drafts.filter((draft) =>
+    draft.newLine !== undefined ? draft.newLine === line.newLine : draft.oldLine === line.oldLine,
+  )
 }
 
 function UnifiedHunks({
@@ -308,11 +344,13 @@ function UnifiedHunks({
   path,
   tokens,
   threads,
+  drafts,
   target,
   setTarget,
   onComment,
   onReply,
   onResolve,
+  draftActions,
 }: HunkTableProps): React.JSX.Element {
   return (
     // Fixed layout, like the split view: without definite column widths a wide
@@ -365,6 +403,13 @@ function UnifiedHunks({
                       onResolve={onResolve}
                     />
                   ))}
+                  {draftsOn(drafts, line).map((draft) => (
+                    <tr key={draft.id}>
+                      <td colSpan={3} className="p-0">
+                        <DraftCard draft={draft} {...draftActions} />
+                      </td>
+                    </tr>
+                  ))}
                   {isTarget && (
                     <tr>
                       <td colSpan={3} className="p-0">
@@ -394,11 +439,13 @@ function SplitHunks({
   path,
   tokens,
   threads,
+  drafts,
   target,
   setTarget,
   onComment,
   onReply,
   onResolve,
+  draftActions,
 }: HunkTableProps): React.JSX.Element {
   return (
     <table className="mono w-full table-fixed border-collapse">
@@ -464,6 +511,13 @@ function SplitHunks({
                       onReply={onReply}
                       onResolve={onResolve}
                     />
+                  ))}
+                  {draftsOn(drafts, right ?? left).map((draft) => (
+                    <tr key={draft.id}>
+                      <td colSpan={4} className="p-0">
+                        <DraftCard draft={draft} {...draftActions} />
+                      </td>
+                    </tr>
                   ))}
                   {activeSide && target && (
                     <tr>

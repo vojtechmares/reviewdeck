@@ -12,7 +12,13 @@ import {
   Send,
   X,
 } from 'lucide-react'
-import type { LineCommentDraft, PullDetail, ReviewItem, ReviewVerdict } from '@shared/types'
+import type {
+  DraftComment,
+  LineCommentDraft,
+  PullDetail,
+  ReviewItem,
+  ReviewVerdict,
+} from '@shared/types'
 import { agentCommand } from '@shared/agent-prompt'
 import { repositoryRoot } from '@shared/autolink'
 import { cn, relativeTime } from '@/lib/utils'
@@ -37,6 +43,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
   const toast = useToast()
 
   const [detail, setDetail] = useState<PullDetail | null>(null)
+  const [drafts, setDrafts] = useState<DraftComment[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('diff')
@@ -50,9 +57,15 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
     setLoading(true)
     setError(null)
     setDetail(null)
+    setDrafts([])
     setTab('diff')
     setVerdict(null)
     setBody('')
+
+    // Drafts are the main process's, so they are read back rather than remembered.
+    void window.reviewdeck.drafts.list(item.id).then((pending) => {
+      if (!cancelled) setDrafts(pending)
+    })
 
     void window.reviewdeck.pull
       .detail(item.id)
@@ -93,20 +106,49 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
     void window.reviewdeck.app.openExternal(url)
   }, [])
 
+  /**
+   * Writing on a line drafts a remark rather than sending it, so a review can be
+   * revised and arrives as one thing instead of a notification per thought.
+   */
   const addLineComment = useCallback(
     async (draft: Omit<LineCommentDraft, 'itemId'>) => {
       if (!detail) return
       try {
-        await window.reviewdeck.pull.lineComment({ ...draft, itemId: item.id }, detail.refs)
-        toast.ok('Comment posted.')
-        const reloaded = await window.reviewdeck.pull.detail(item.id)
-        setDetail(reloaded)
+        setDrafts(
+          await window.reviewdeck.drafts.add({
+            itemId: item.id,
+            body: draft.body,
+            path: draft.path,
+            newLine: draft.newLine,
+            oldLine: draft.oldLine,
+            // What the diff looked like when it was written, so it can be sent
+            // against the code that was actually read.
+            refs: detail.refs,
+          }),
+        )
       } catch (cause) {
         toast.bad(errorMessage(cause))
         throw cause
       }
     },
     [detail, item.id, toast],
+  )
+
+  const draftActions = useMemo(
+    () => ({
+      onEdit: async (id: string, body: string): Promise<void> => {
+        try {
+          setDrafts(await window.reviewdeck.drafts.update(id, body))
+        } catch (cause) {
+          toast.bad(errorMessage(cause))
+          throw cause
+        }
+      },
+      onDelete: async (id: string): Promise<void> => {
+        setDrafts(await window.reviewdeck.drafts.remove(id))
+      },
+    }),
+    [toast],
   )
 
   const replyToThread = useCallback(
@@ -151,14 +193,20 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
     if (submitting) return
     setSubmitting(true)
     try {
-      if (verdict) {
-        await window.reviewdeck.pull.review({ itemId: item.id, verdict, body: body.trim() })
+      if (verdict || drafts.length) {
+        // No verdict with drafts still goes through the review call, so the whole
+        // set arrives together as plain comments rather than one at a time.
+        await window.reviewdeck.pull.review({
+          itemId: item.id,
+          verdict: verdict ?? 'comment',
+          body: body.trim(),
+        })
         toast.ok(
           verdict === 'approve'
             ? 'Approved.'
             : verdict === 'request_changes'
               ? 'Changes requested.'
-              : 'Review comment posted.',
+              : 'Review submitted.',
         )
       } else {
         await window.reviewdeck.pull.comment(item.id, body.trim())
@@ -166,17 +214,19 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
       }
       setBody('')
       setVerdict(null)
-      const reloaded = await window.reviewdeck.pull.detail(item.id)
-      setDetail(reloaded)
+      // A submission that threw leaves them alone, so this only runs on success.
+      setDrafts(await window.reviewdeck.drafts.list(item.id))
+      setDetail(await window.reviewdeck.pull.detail(item.id))
       void refresh()
     } catch (cause) {
       toast.bad(errorMessage(cause))
     } finally {
       setSubmitting(false)
     }
-  }, [body, item.id, refresh, submitting, toast, verdict])
+  }, [body, drafts.length, item.id, refresh, submitting, toast, verdict])
 
-  const canSubmit = (verdict === 'approve' || body.trim().length > 0) && !submitting
+  const canSubmit =
+    (verdict === 'approve' || drafts.length > 0 || body.trim().length > 0) && !submitting
 
   // Where `@someone`, `#123` and a relative image source in this pull request's
   // prose should point. Every signed-in account is offered, not just this item's,
@@ -305,10 +355,12 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
                 <DiffView
                   files={detail.files}
                   threads={inline}
+                  drafts={drafts}
                   mode={settings.diffView}
                   onComment={addLineComment}
                   onReply={replyToThread}
                   onResolve={resolveThread}
+                  draftActions={draftActions}
                 />
               )}
               {tab === 'checks' && <ChecksPanel checks={item.checks} onOpen={openExternal} />}
@@ -351,14 +403,16 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
 
         <footer className="glass-quiet shrink-0 border-t border-border p-3">
           <Textarea
-            rows={verdict || body ? 3 : 1}
+            rows={verdict || body || drafts.length ? 3 : 1}
             value={body}
             placeholder={
               verdict === 'approve'
                 ? 'Optional note with your approval…'
                 : verdict === 'request_changes'
                   ? 'What needs to change?'
-                  : 'Leave a comment on this pull request…'
+                  : drafts.length
+                    ? 'Optional summary for your review…'
+                    : 'Leave a comment on this pull request…'
             }
             onChange={(event) => setBody(event.target.value)}
             onKeyDown={(event) => {
@@ -366,6 +420,11 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
             }}
           />
           <div className="mt-2 flex items-center gap-1.5">
+            {drafts.length > 0 && (
+              <Badge tone="info">
+                {drafts.length} pending comment{drafts.length === 1 ? '' : 's'}
+              </Badge>
+            )}
             <VerdictButton
               active={verdict === 'approve'}
               variant="success"
@@ -395,7 +454,9 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
                 ? 'Approve'
                 : verdict === 'request_changes'
                   ? 'Request changes'
-                  : 'Comment'}
+                  : drafts.length
+                    ? 'Submit review'
+                    : 'Comment'}
             </Button>
           </div>
         </footer>

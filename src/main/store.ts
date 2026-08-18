@@ -8,7 +8,13 @@ import { app, safeStorage } from 'electron'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { DEFAULT_SETTINGS, mergeSettings, type Account, type Settings } from '@shared/types.ts'
+import {
+  DEFAULT_SETTINGS,
+  mergeSettings,
+  type Account,
+  type DraftComment,
+  type Settings,
+} from '@shared/types.ts'
 
 interface Vault {
   version: 1
@@ -18,6 +24,8 @@ interface Vault {
   settings: Settings
   /** Item ids we have already notified about, so a restart does not re-announce them. */
   seen: string[]
+  /** Line comments written but not yet submitted, across every pull request. */
+  drafts: DraftComment[]
 }
 
 const EMPTY: Vault = {
@@ -26,6 +34,7 @@ const EMPTY: Vault = {
   tokens: {},
   settings: { ...DEFAULT_SETTINGS },
   seen: [],
+  drafts: [],
 }
 
 let cache: Vault | null = null
@@ -51,6 +60,7 @@ function load(): Vault {
       tokens: parsed.tokens ?? {},
       settings: mergeSettings(parsed.settings),
       seen: parsed.seen ?? [],
+      drafts: parsed.drafts ?? [],
     }
   } catch (error) {
     // A corrupt file should not brick the app; keep the bad copy for forensics.
@@ -116,6 +126,15 @@ export function setToken(id: string, token: string): void {
     throw new Error('No such account.')
   }
   vault.tokens[id] = encrypt(token)
+  persist()
+}
+
+export function loadDrafts(): DraftComment[] {
+  return load().drafts
+}
+
+export function persistDrafts(drafts: DraftComment[]): void {
+  load().drafts = drafts
   persist()
 }
 

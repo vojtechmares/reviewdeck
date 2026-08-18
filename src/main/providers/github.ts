@@ -447,13 +447,28 @@ export const github: Provider = {
     return loadChecks(session, item.repoKey, pull.head.sha, signal)
   },
 
-  async submitReview(session, item, verdict, body) {
+  async submitReview(session, item, verdict, body, comments) {
     const event =
       verdict === 'approve' ? 'APPROVE' : verdict === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT'
+
     await request(api(session, `/repos/${item.repoKey}/pulls/${item.number}/reviews`), {
       method: 'POST',
       headers: headers(session),
-      body: { event, body: body || undefined },
+      body: {
+        event,
+        body: body || undefined,
+        // Against the commit the drafts were written on, not whatever the branch
+        // has become, so each remark lands on the code its author actually read.
+        commit_id: comments[0]?.refs.headSha,
+        comments: comments.length
+          ? comments.map((comment) => ({
+              path: comment.path,
+              body: comment.body,
+              side: comment.newLine ? 'RIGHT' : 'LEFT',
+              line: comment.newLine ?? comment.oldLine,
+            }))
+          : undefined,
+      },
     })
   },
 

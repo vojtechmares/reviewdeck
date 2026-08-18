@@ -8,12 +8,14 @@ import type {
   Account,
   AccountDraft,
   DeckState,
-  DiffRefs,
-  LineCommentDraft,
+  DraftComment,
   PullDetail,
   ReviewSubmission,
   Settings,
 } from '@shared/types.ts'
+
+/** A draft before the main process gives it an identifier and a timestamp. */
+type NewDraftComment = Omit<DraftComment, 'id' | 'createdAt'>
 
 const api = {
   accounts: {
@@ -45,12 +47,18 @@ const api = {
       ipcRenderer.invoke('pull:review', submission),
     comment: (itemId: string, body: string): Promise<void> =>
       ipcRenderer.invoke('pull:comment', itemId, body),
-    lineComment: (draft: LineCommentDraft, refs: DiffRefs): Promise<void> =>
-      ipcRenderer.invoke('pull:lineComment', draft, refs),
     replyToThread: (itemId: string, threadId: string, body: string): Promise<void> =>
       ipcRenderer.invoke('pull:replyToThread', itemId, threadId, body),
     resolveThread: (itemId: string, threadId: string, resolved: boolean): Promise<void> =>
       ipcRenderer.invoke('pull:resolveThread', itemId, threadId, resolved),
+  },
+  drafts: {
+    list: (itemId: string): Promise<DraftComment[]> => ipcRenderer.invoke('drafts:list', itemId),
+    add: (draft: NewDraftComment): Promise<DraftComment[]> =>
+      ipcRenderer.invoke('drafts:add', draft),
+    update: (id: string, body: string): Promise<DraftComment[]> =>
+      ipcRenderer.invoke('drafts:update', id, body),
+    remove: (id: string): Promise<DraftComment[]> => ipcRenderer.invoke('drafts:remove', id),
   },
   settings: {
     get: (): Promise<Settings> => ipcRenderer.invoke('settings:get'),
