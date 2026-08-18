@@ -1,13 +1,6 @@
 import type { CheckSummary } from '@shared/types'
 import { cn } from '@/lib/utils'
-import { CheckIcon } from './CheckPill'
-
-const TONE = {
-  passed: 'text-ok',
-  failed: 'text-bad',
-  running: 'text-busy',
-  unknown: 'text-muted-foreground',
-} as const
+import { CHECK_TONE, CheckIcon } from './CheckPill'
 
 export function ChecksPanel({
   checks,
@@ -28,7 +21,7 @@ export function ChecksPanel({
     <div className="p-4">
       <div className="glass overflow-hidden rounded-lg">
         <div className="flex items-center gap-3 border-b border-border px-3.5 py-2.5">
-          <CheckIcon status={checks.status} className={cn('size-4', TONE[checks.status])} />
+          <CheckIcon status={checks.status} className={cn('size-4', CHECK_TONE[checks.status])} />
           <p className="text-[13px] font-medium">
             {checks.status === 'running'
               ? `${checks.running} check${checks.running === 1 ? '' : 's'} still running`
@@ -46,7 +39,7 @@ export function ChecksPanel({
         <ul className="divide-y divide-border">
           {checks.runs.map((run) => (
             <li key={run.id} className="flex items-center gap-2.5 px-3.5 py-2">
-              <CheckIcon status={run.status} className={cn('size-3.5 shrink-0', TONE[run.status])} />
+              <CheckIcon status={run.status} className={cn('size-3.5 shrink-0', CHECK_TONE[run.status])} />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[12.5px] font-medium">{run.name}</p>
                 {run.description && (
