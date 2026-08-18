@@ -281,7 +281,14 @@ function UnifiedHunks({
   onResolve,
 }: HunkTableProps): React.JSX.Element {
   return (
-    <table className="mono w-full border-collapse">
+    // Fixed layout, like the split view: without definite column widths a wide
+    // table inside a comment would stretch the whole diff rather than scroll.
+    <table className="mono w-full table-fixed border-collapse">
+      <colgroup>
+        <col className="w-11" />
+        <col className="w-11" />
+        <col />
+      </colgroup>
       <tbody>
         {hunks.map((hunk, hunkIndex) => (
           <Fragment key={hunkIndex}>
@@ -476,7 +483,9 @@ function Gutter({
 function Code({ line, className }: { line?: DiffLine; className?: string }): React.JSX.Element {
   if (!line) return <td className={cn('align-top', className)} />
   return (
-    <td className={cn('px-2 align-top whitespace-pre-wrap', className)}>
+    // Both layouts fix their column widths, so a long unbroken line has to wrap
+    // rather than run out past the edge of the diff and be clipped.
+    <td className={cn('px-2 align-top break-words whitespace-pre-wrap', className)}>
       <span className="mr-1 inline-block w-2 shrink-0 text-[var(--diff-gutter)] select-none">
         {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
       </span>

@@ -12,13 +12,20 @@ import { cn } from '@/lib/utils'
  */
 export function Markdown({
   children,
+  compact,
   className,
 }: {
   children: string
+  /**
+   * For a comment living inside a diff row. Same parser and same plugins - only
+   * the scale and the containment differ, so a fenced code suggestion still
+   * renders where people actually leave them.
+   */
+  compact?: boolean
   className?: string
 }): React.JSX.Element {
   return (
-    <div className={cn('md', className)}>
+    <div className={cn('md', compact && 'md-compact', className)}>
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
         {children}
       </ReactMarkdown>

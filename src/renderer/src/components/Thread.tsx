@@ -137,7 +137,9 @@ function Comment({
           <span className="font-semibold">{comment.author.name}</span>{' '}
           <span className="text-muted-foreground">{relativeTime(comment.createdAt)}</span>
         </p>
-        <Markdown className="mt-1">{comment.body}</Markdown>
+        <Markdown compact={dense} className="mt-1">
+          {comment.body}
+        </Markdown>
       </div>
     </div>
   )

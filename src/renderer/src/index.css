@@ -450,6 +450,87 @@
   .md details[open] > summary {
     margin-bottom: 0.4em;
   }
+
+  /*
+   * The compact variant, for a comment left on a line of the diff. Same parser and
+   * the same plugins as anywhere else - a fenced code block still renders, because
+   * a suggestion is exactly what people leave on a line - so what changes is only
+   * the scale and the containment.
+   *
+   * Containment is the real work: this sits in a cell of a table that is already
+   * fighting for horizontal space, so anything naturally wide has to scroll or cap
+   * inside its own box rather than push the diff's columns around. `min-width: 0`
+   * is what lets it: without it the flex and table ancestors take their minimum
+   * size from this content and there is nothing to scroll within.
+   */
+  .md-compact {
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .md-compact p,
+  .md-compact blockquote,
+  .md-compact ul,
+  .md-compact ol,
+  .md-compact pre,
+  .md-compact table,
+  .md-compact details {
+    margin: 0.45em 0;
+  }
+
+  /* A stray heading in a line comment must not tower over the code it is about. */
+  .md-compact h1,
+  .md-compact h2,
+  .md-compact h3,
+  .md-compact h4,
+  .md-compact h5,
+  .md-compact h6 {
+    margin: 0.7em 0 0.3em;
+    font-size: 1em;
+  }
+  .md-compact h1 {
+    font-size: 1.08em;
+  }
+  .md-compact h2 {
+    font-size: 1.04em;
+  }
+  .md-compact h1,
+  .md-compact h2 {
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+
+  .md-compact ul,
+  .md-compact ol {
+    padding-left: 1.15em;
+  }
+  .md-compact hr {
+    margin: 0.8em 0;
+  }
+  .md-compact blockquote {
+    padding-left: 0.7em;
+  }
+  .md-compact pre {
+    padding: 0.5em 0.6em;
+  }
+  .md-compact table {
+    font-size: 0.95em;
+  }
+  .md-compact th,
+  .md-compact td {
+    padding: 0.25em 0.5em;
+  }
+
+  /* Height-capped rather than full-bleed: a screenshot must not bury the diff. */
+  .md-compact img {
+    max-height: 14rem;
+    width: auto;
+  }
+
+  .md-compact details {
+    padding: 0.4em 0.6em;
+  }
 }
 
 @utility mono {
