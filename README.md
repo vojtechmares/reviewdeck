@@ -18,8 +18,9 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
   filterable by account, check status or free text.
 - **Native notifications** when a new review request appears, with a menu-bar count of what is
   still waiting.
-- **A real diff viewer** - side by side or unified, with inline comments on any line and existing
-  review comments anchored where they were left.
+- **A real diff viewer** - side by side or unified, syntax highlighted in a theme that suits the
+  app in both light and dark, with inline comments on any line and existing review comments
+  anchored where they were left.
 - **Threaded conversations.** Replies sit under what they answer, and where the host supports it
   you can reply and resolve without leaving the app.
 - **Descriptions and comments as Markdown**, GitHub-flavoured and rendered through a
@@ -157,7 +158,7 @@ This is an MVP.
 
 - macOS only.
 - Bitbucket Server (the self-hosted one) uses a different API and is not supported; Bitbucket Cloud is.
-- Diffs are not syntax highlighted.
+- Syntax highlighting covers a common set of languages; a file outside it reads as plain text.
 - Replying to a thread and resolving one work on GitLab. On GitHub, Forgejo and Bitbucket every
   comment still arrives as a thread of its own, with no reply or resolve offered - GitHub's
   review threads and their resolution live only in its GraphQL API.

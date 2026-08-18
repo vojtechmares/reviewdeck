@@ -1,7 +1,9 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { ChevronRight, FilePlus2, FileMinus2, FileSymlink, MessageSquarePlus, Plus } from 'lucide-react'
 import { parsePatch, toSplitRows, type DiffHunk, type DiffLine } from '@shared/diff'
+import { languageFor } from '@shared/highlight'
 import type { CommentThread, DiffFile, LineCommentDraft } from '@shared/types'
+import { highlightHunks, type Token } from '@/lib/highlight'
 import { cn } from '@/lib/utils'
 import { Button } from './ui/button'
 import { Textarea } from './ui/input'
@@ -114,6 +116,32 @@ function useNearViewport(ref: RefObject<Element | null>, initial: boolean): bool
   return near
 }
 
+/**
+ * Tokens for a file's hunks, once it is on screen and once they arrive.
+ *
+ * Deliberately after the fact: the diff renders plain and gains colour a moment
+ * later, so loading a grammar never stands between the reader and the code.
+ */
+function useHighlight(hunks: DiffHunk[] | null, path: string): Map<DiffLine, Token[]> | null {
+  const [tokens, setTokens] = useState<Map<DiffLine, Token[]> | null>(null)
+  const language = useMemo(() => languageFor(path), [path])
+
+  useEffect(() => {
+    setTokens(null)
+    if (!hunks?.length || !language) return
+
+    let cancelled = false
+    void highlightHunks(hunks, language).then((result) => {
+      if (!cancelled) setTokens(result)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [hunks, language])
+
+  return tokens
+}
+
 function FileBlock({
   file,
   index,
@@ -154,6 +182,8 @@ function FileBlock({
   const estimatedHeight =
     hunks.length * ESTIMATED_HUNK_HEADER_HEIGHT + lineCount * ESTIMATED_ROW_HEIGHT
 
+  const tokens = useHighlight(rendered ? hunks : null, file.path)
+
   // The two layouts are different heights, so a measurement does not carry over.
   useLayoutEffect(() => setMeasuredHeight(null), [mode])
 
@@ -163,7 +193,7 @@ function FileBlock({
     // position by a pixel a time across a long diff.
     const height = rows.current?.getBoundingClientRect().height ?? 0
     if (height > 0) setMeasuredHeight((current) => (current === height ? current : height))
-  }, [rendered, mode, hunks, threads])
+  }, [rendered, mode, hunks, threads, tokens])
 
   const Icon =
     file.status === 'added'
@@ -219,6 +249,7 @@ function FileBlock({
                 <SplitHunks
                   hunks={hunks}
                   path={file.path}
+                  tokens={tokens}
                   threads={threads}
                   target={target}
                   setTarget={setTarget}
@@ -230,6 +261,7 @@ function FileBlock({
                 <UnifiedHunks
                   hunks={hunks}
                   path={file.path}
+                  tokens={tokens}
                   threads={threads}
                   target={target}
                   setTarget={setTarget}
@@ -262,6 +294,7 @@ const CELL_BG: Record<string, string> = {
 interface HunkTableProps {
   hunks: DiffHunk[]
   path: string
+  tokens: Map<DiffLine, Token[]> | null
   threads: CommentThread[]
   target: CommentTarget | null
   setTarget: (target: CommentTarget | null) => void
@@ -273,6 +306,7 @@ interface HunkTableProps {
 function UnifiedHunks({
   hunks,
   path,
+  tokens,
   threads,
   target,
   setTarget,
@@ -320,7 +354,7 @@ function UnifiedHunks({
                   <tr className={cn('group', CELL_BG[line.kind])}>
                     <Gutter value={line.oldLine} onAdd={() => setTarget(targetFor(path, line))} />
                     <Gutter value={line.newLine} />
-                    <Code line={line} />
+                    <Code line={line} tokens={tokens?.get(line)} />
                   </tr>
                   {attached.map((thread) => (
                     <ThreadRow
@@ -358,6 +392,7 @@ function UnifiedHunks({
 function SplitHunks({
   hunks,
   path,
+  tokens,
   threads,
   target,
   setTarget,
@@ -405,13 +440,21 @@ function SplitHunks({
                       className={left && !paired ? 'bg-[var(--diff-del)]' : ''}
                       onAdd={left ? () => setTarget(targetFor(path, left, 'old')) : undefined}
                     />
-                    <Code line={left} className={left && !paired ? 'bg-[var(--diff-del)]' : ''} />
+                    <Code
+                      line={left}
+                      tokens={left ? tokens?.get(left) : undefined}
+                      className={left && !paired ? 'bg-[var(--diff-del)]' : ''}
+                    />
                     <Gutter
                       value={right?.newLine}
                       className={right && !paired ? 'bg-[var(--diff-add)]' : ''}
                       onAdd={right ? () => setTarget(targetFor(path, right, 'new')) : undefined}
                     />
-                    <Code line={right} className={right && !paired ? 'bg-[var(--diff-add)]' : ''} />
+                    <Code
+                      line={right}
+                      tokens={right ? tokens?.get(right) : undefined}
+                      className={right && !paired ? 'bg-[var(--diff-add)]' : ''}
+                    />
                   </tr>
                   {attached.map((thread) => (
                     <ThreadRow
@@ -480,7 +523,15 @@ function Gutter({
   )
 }
 
-function Code({ line, className }: { line?: DiffLine; className?: string }): React.JSX.Element {
+function Code({
+  line,
+  tokens,
+  className,
+}: {
+  line?: DiffLine
+  tokens?: Token[]
+  className?: string
+}): React.JSX.Element {
   if (!line) return <td className={cn('align-top', className)} />
   return (
     // Both layouts fix their column widths, so a long unbroken line has to wrap
@@ -489,7 +540,13 @@ function Code({ line, className }: { line?: DiffLine; className?: string }): Rea
       <span className="mr-1 inline-block w-2 shrink-0 text-[var(--diff-gutter)] select-none">
         {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
       </span>
-      {line.content || ' '}
+      {tokens?.length
+        ? tokens.map((token, index) => (
+            <span key={index} className="tok" style={token.style as React.CSSProperties}>
+              {token.content}
+            </span>
+          ))
+        : line.content || ' '}
     </td>
   )
 }

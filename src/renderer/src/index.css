@@ -248,6 +248,20 @@
   }
 
   /*
+   * Syntax tokens in the diff.
+   *
+   * The highlighter emits both themes at once as custom properties, so switching
+   * light and dark is this rule pair and nothing else - no second pass over the
+   * code, and no colour that has to be recomputed when the theme changes.
+   */
+  .tok {
+    color: var(--shiki-light);
+  }
+  .dark .tok {
+    color: var(--shiki-dark);
+  }
+
+  /*
    * Rendered markdown. Written by hand rather than pulled in with a typography
    * plugin, because a pull request body sits inside dense app chrome: headings
    * stay near body size, vertical rhythm is tight, and colour is left to the
