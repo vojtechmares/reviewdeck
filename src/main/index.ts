@@ -4,6 +4,7 @@ import { deck } from './deck.ts'
 import { registerImageScheme, serveImages } from './images.ts'
 import { flushDrafts, registerIpc } from './ipc.ts'
 import { getSettings } from './store.ts'
+import { visibleReviews } from '@shared/types.ts'
 
 const isDev = !app.isPackaged
 
@@ -94,13 +95,16 @@ function createTray(): void {
 
   const render = (): void => {
     const { items, statuses } = deck.state()
+    // The same reviews the window lists, not every review the deck holds: a menu
+    // bar that says three while the app shows one is the menu bar being wrong.
+    const waiting = visibleReviews(items, getSettings())
     const failing = statuses.filter((status) => !status.ok).length
-    tray?.setTitle(items.length ? ` ${items.length}` : '')
+    tray?.setTitle(waiting.length ? ` ${waiting.length}` : '')
     tray?.setContextMenu(
       Menu.buildFromTemplate([
         {
-          label: items.length
-            ? `${items.length} review${items.length === 1 ? '' : 's'} waiting`
+          label: waiting.length
+            ? `${waiting.length} review${waiting.length === 1 ? '' : 's'} waiting`
             : 'Nothing waiting on you',
           enabled: false,
         },

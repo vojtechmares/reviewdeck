@@ -274,6 +274,9 @@ export function registerIpc(): void {
   ipcMain.handle('settings:set', (_event, patch: Partial<Settings>): Settings => {
     const next = saveSettings(patch)
     if (patch.pollInterval !== undefined || patch.checkPollInterval !== undefined) deck.reschedule()
+    // The menu bar counts what the deck shows, so a setting that changes what it
+    // shows has to redraw it now rather than at the next background refresh.
+    if (patch.hideApproved !== undefined) deck.publish()
     // The window's vibrancy and title bar follow the native theme, not the CSS class.
     if (patch.theme !== undefined) nativeTheme.themeSource = patch.theme
     if (patch.launchAtLogin !== undefined) {

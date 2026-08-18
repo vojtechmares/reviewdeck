@@ -235,6 +235,25 @@ export function mergeSettings(stored: Partial<Settings> | null | undefined): Set
   return { ...DEFAULT_SETTINGS, ...(stored ?? {}) }
 }
 
+/**
+ * Whether a review is one the user still wants in front of them.
+ *
+ * Shared rather than kept with the renderer's other filters, because the menu bar
+ * counts the same deck the window lists, and the two disagreeing is something the
+ * user sees. Only standing preferences belong here - the query box, the account
+ * picker and the check picker stay in the renderer, because those are a view
+ * somebody is driving by hand rather than a rule the whole app should honour.
+ */
+export function isVisibleReview(item: ReviewItem, settings: Settings): boolean {
+  if (settings.hideApproved && item.myReviewState === 'approved') return false
+  return true
+}
+
+/** The reviews a deck actually shows, which is the number the menu bar carries. */
+export function visibleReviews(items: ReviewItem[], settings: Settings): ReviewItem[] {
+  return items.filter((item) => isVisibleReview(item, settings))
+}
+
 /** Per-account outcome of a refresh, so the UI can show which host is unhappy. */
 export interface AccountStatus {
   accountId: string

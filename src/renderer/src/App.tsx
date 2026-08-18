@@ -10,7 +10,7 @@ import {
   UserRoundPlus,
   X,
 } from 'lucide-react'
-import type { CheckStatus, ReviewItem } from '@shared/types'
+import { isVisibleReview, type CheckStatus, type ReviewItem, type Settings } from '@shared/types'
 import { cn, relativeTime } from '@/lib/utils'
 import { useApp } from '@/hooks/useApp'
 import { AccountsDialog } from './components/AccountsDialog'
@@ -34,11 +34,10 @@ export function App(): React.JSX.Element {
   const [accountsOpen, setAccountsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
-  const items = useMemo(() => applyFilters(deck.items, filters, settings.hideApproved), [
-    deck.items,
-    filters,
-    settings.hideApproved,
-  ])
+  const items = useMemo(
+    () => applyFilters(deck.items, filters, settings),
+    [deck.items, filters, settings],
+  )
 
   // Keep a valid selection as the deck changes underneath us.
   useEffect(() => {
@@ -324,10 +323,10 @@ function Empty({
   )
 }
 
-function applyFilters(items: ReviewItem[], filters: Filters, hideApproved: boolean): ReviewItem[] {
+function applyFilters(items: ReviewItem[], filters: Filters, settings: Settings): ReviewItem[] {
   const needle = filters.query.trim().toLowerCase()
   return items.filter((item) => {
-    if (hideApproved && item.myReviewState === 'approved') return false
+    if (!isVisibleReview(item, settings)) return false
     if (filters.account !== 'all' && item.accountId !== filters.account) return false
     if (filters.checks !== 'all' && item.checks.status !== filters.checks) return false
     if (!needle) return true
