@@ -8,7 +8,7 @@ import { app, safeStorage } from 'electron'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { DEFAULT_SETTINGS, type Account, type Settings } from '@shared/types.ts'
+import { DEFAULT_SETTINGS, mergeSettings, type Account, type Settings } from '@shared/types.ts'
 
 interface Vault {
   version: 1
@@ -49,7 +49,7 @@ function load(): Vault {
       version: 1,
       accounts: parsed.accounts ?? [],
       tokens: parsed.tokens ?? {},
-      settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) },
+      settings: mergeSettings(parsed.settings),
       seen: parsed.seen ?? [],
     }
   } catch (error) {

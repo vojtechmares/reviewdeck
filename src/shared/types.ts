@@ -152,7 +152,6 @@ export interface Settings {
   notificationsEnabled: boolean
   playSound: boolean
   diffView: 'split' | 'unified'
-  showWhitespace: boolean
   theme: 'system' | 'light' | 'dark'
   /** Hide PRs the user has already approved. */
   hideApproved: boolean
@@ -165,10 +164,18 @@ export const DEFAULT_SETTINGS: Settings = {
   notificationsEnabled: true,
   playSound: true,
   diffView: 'split',
-  showWhitespace: false,
   theme: 'system',
   hideApproved: false,
   launchAtLogin: false,
+}
+
+/**
+ * Stored settings laid over the defaults, so a vault written by an older build
+ * still loads: a setting added since is filled in from the defaults, and one
+ * removed since is carried along harmlessly rather than throwing.
+ */
+export function mergeSettings(stored: Partial<Settings> | null | undefined): Settings {
+  return { ...DEFAULT_SETTINGS, ...(stored ?? {}) }
 }
 
 /** Per-account outcome of a refresh, so the UI can show which host is unhappy. */
