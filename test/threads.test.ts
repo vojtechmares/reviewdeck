@@ -2,10 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   bitbucketThreads,
+  forgejoThreadId,
   forgejoThreads,
   githubFlatThreads,
   githubThreads,
   gitlabThreads,
+  parseForgejoThreadId,
 } from '../src/main/providers/threads.ts'
 
 test('githubFlatThreads gives every comment its own thread with no affordances', () => {
@@ -74,7 +76,7 @@ test('githubFlatThreads falls back to the original line and reads the left side'
   assert.equal(thread.comments[0].author.name, 'unknown')
 })
 
-test('forgejoThreads gives every comment its own thread with no affordances', () => {
+test('forgejoThreads keeps an ordinary comment a thread of one with no affordances', () => {
   const threads = forgejoThreads([
     {
       id: 7,
@@ -93,10 +95,152 @@ test('forgejoThreads gives every comment its own thread with no affordances', ()
       createdAt: '2026-08-02T08:00:00Z',
     },
   ])
+  // Forgejo has no notion of replying to a pull request comment.
   assert.equal(threads[0].canReply, false)
   assert.equal(threads[0].canResolve, false)
-  // Forgejo comments come off the issue endpoint, so none of them are anchored.
   assert.equal(threads[0].path, undefined)
+})
+
+test('forgejoThreadId survives a round trip, including a path with a colon in it', () => {
+  for (const [path, side, line] of [
+    ['src/app.ts', 'new', 42],
+    ['src/a:b.ts', 'old', 7],
+    ['deep/nested/path/with:colons/x.go', 'new', 1],
+  ] as [string, 'old' | 'new', number][]) {
+    assert.deepEqual(parseForgejoThreadId(forgejoThreadId(path, side, line)), { path, side, line })
+  }
+
+  assert.equal(parseForgejoThreadId('not-a-thread-id'), null)
+  assert.equal(parseForgejoThreadId('fj:sideways:1:a.ts'), null)
+  assert.equal(parseForgejoThreadId('fj:new:notanumber:a.ts'), null)
+  assert.equal(parseForgejoThreadId('fj:new:1:'), null)
+})
+
+test('forgejoThreads groups review comments by the line they were left on', () => {
+  const threads = forgejoThreads(
+    [],
+    [
+      {
+        id: 20,
+        user: { login: 'mnovotna' },
+        body: 'Can this go into config?',
+        created_at: '2026-08-02T09:00:00Z',
+        path: 'internal/capture.go',
+        position: 55,
+        original_position: 0,
+      },
+      {
+        id: 21,
+        user: { login: 'hkramer' },
+        body: 'Follow-up.',
+        created_at: '2026-08-02T10:00:00Z',
+        path: 'internal/capture.go',
+        position: 55,
+        original_position: 0,
+      },
+      {
+        id: 22,
+        user: { login: 'mnovotna' },
+        body: 'Different line entirely.',
+        created_at: '2026-08-02T11:00:00Z',
+        path: 'internal/capture.go',
+        position: 80,
+        original_position: 0,
+      },
+    ],
+  )
+
+  assert.equal(threads.length, 2, 'two lines, two conversations')
+
+  const [first, second] = threads
+  assert.deepEqual(
+    first.comments.map((comment) => comment.body),
+    ['Can this go into config?', 'Follow-up.'],
+  )
+  assert.equal(first.line, 55)
+  assert.equal(first.side, 'new')
+  assert.equal(first.path, 'internal/capture.go')
+  assert.equal(second.line, 80)
+
+  // Two comments left in different reviews still share one conversation, so the
+  // identifier cannot come from a review id.
+  assert.equal(first.id, forgejoThreadId('internal/capture.go', 'new', 55))
+})
+
+test('forgejoThreads reads the old side from the original position', () => {
+  const [thread] = forgejoThreads(
+    [],
+    [
+      {
+        id: 30,
+        body: 'Why was this dropped?',
+        created_at: '2026-08-02T09:00:00Z',
+        path: 'a.ts',
+        position: 0,
+        original_position: 12,
+      },
+    ],
+  )
+
+  assert.equal(thread.side, 'old')
+  assert.equal(thread.line, 12)
+  assert.equal(thread.comments[0].author.name, 'unknown')
+})
+
+test('forgejoThreads offers a reply on an inline thread and never a resolve', () => {
+  const [thread] = forgejoThreads(
+    [],
+    [{ id: 40, body: 'A remark.', created_at: '2026-08-02T09:00:00Z', path: 'a.ts', position: 3 }],
+  )
+
+  // A reply is another comment at the same anchor, which the API does support.
+  assert.equal(thread.canReply, true)
+  // Resolution has no REST endpoint at all, so the control must never appear.
+  assert.equal(thread.canResolve, false)
+})
+
+test('forgejoThreads counts a conversation resolved only once every comment in it is', () => {
+  const at = (id: number, resolver?: { login: string }): {
+    id: number
+    body: string
+    created_at: string
+    path: string
+    position: number
+    resolver?: { login: string }
+  } => ({ id, body: `c${id}`, created_at: '2026-08-02T09:00:00Z', path: 'a.ts', position: 5, resolver })
+
+  const [partly] = forgejoThreads([], [at(1, { login: 'vmares' }), at(2)])
+  assert.equal(partly.resolved, false)
+
+  const [fully] = forgejoThreads([], [at(3, { login: 'vmares' }), at(4, { login: 'vmares' })])
+  assert.equal(fully.resolved, true)
+
+  const [none] = forgejoThreads([], [at(5)])
+  assert.equal(none.resolved, false)
+})
+
+test('forgejoThreads drops a review comment it cannot anchor', () => {
+  const threads = forgejoThreads(
+    [],
+    [
+      { id: 50, body: 'no path', created_at: '2026-08-02T09:00:00Z', position: 3 },
+      { id: 51, body: 'no line', created_at: '2026-08-02T09:00:00Z', path: 'a.ts', position: 0 },
+    ],
+  )
+
+  assert.deepEqual(threads, [])
+})
+
+test('forgejoThreads orders ordinary comments and conversations together by age', () => {
+  const threads = forgejoThreads(
+    [{ id: 60, body: 'second', created_at: '2026-08-02T10:00:00Z' }],
+    [{ id: 61, body: 'first', created_at: '2026-08-02T09:00:00Z', path: 'a.ts', position: 1 }],
+  )
+
+  assert.deepEqual(
+    threads.map((thread) => thread.comments[0].body),
+    ['first', 'second'],
+  )
 })
 
 test('bitbucketThreads keeps the inline anchor and drops deleted comments', () => {

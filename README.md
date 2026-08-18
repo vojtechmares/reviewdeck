@@ -150,7 +150,9 @@ Each host makes a different part of this hard:
   exchange, line comments need the base/start/head SHAs from the MR versions endpoint, and there is
   no single "submit review" call - approving and commenting are separate requests.
 - **Forgejo / Gitea** has `review_requested=true` on its issue search, and attaches inline comments
-  to a review rather than to the pull request.
+  to a review rather than to the pull request - so there is no thread object to point at, and a
+  conversation is instead every comment on one side of one line of one file, which is the rule its
+  own UI works by. Thread identifiers are synthesised from that anchor.
 - **Bitbucket** has no "awaiting my review" endpoint at all - `/pullrequests/{user}` returns what
   you *authored*. So it walks your workspaces, lists each repository's open pull requests and keeps
   the ones naming you as a reviewer, bounded to 120 repositories so a large account cannot stall a
@@ -170,8 +172,9 @@ This is an MVP.
 - macOS only.
 - Bitbucket Server (the self-hosted one) uses a different API and is not supported; Bitbucket Cloud is.
 - Syntax highlighting covers a common set of languages; a file outside it reads as plain text.
-- Replying to a thread and resolving one work on GitHub and GitLab. On Forgejo and Bitbucket every
-  comment still arrives as a thread of its own, with no reply or resolve offered.
+- Replying to a thread works on GitHub, GitLab and Forgejo; resolving one works on GitHub and
+  GitLab. Forgejo's REST API has no endpoint for resolution at all, so the control is hidden
+  there rather than offered and failed. On Bitbucket every comment is still a thread of its own.
 
 Features are implemented here rather than pulled in, with one standing exception: parsing
 and rendering content that other people wrote. Markdown goes through `react-markdown`,

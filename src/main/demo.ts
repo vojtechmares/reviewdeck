@@ -256,8 +256,9 @@ index 2b4c5d6..9e8f7a1 100644
 `
 
 export function demoDetail(item: ReviewItem): PullDetail {
-  // GitHub and GitLab both have real threads now; the rest are still flat.
-  const threaded = item.provider === 'gitlab' || item.provider === 'github'
+  // Only Bitbucket is still flat; and Forgejo can reply but not resolve.
+  const threaded = item.provider !== 'bitbucket'
+  const resolvable = threaded && item.provider !== 'forgejo'
   return {
     item,
     description:
@@ -274,7 +275,7 @@ export function demoDetail(item: ReviewItem): PullDetail {
         resolved: false,
         outdated: false,
         canReply: threaded,
-        canResolve: threaded,
+        canResolve: resolvable,
         comments: [
           {
             id: 'c1',
@@ -292,10 +293,10 @@ export function demoDetail(item: ReviewItem): PullDetail {
       },
       {
         id: 't2',
-        resolved: threaded,
+        resolved: resolvable,
         outdated: false,
         canReply: threaded,
-        canResolve: threaded,
+        canResolve: resolvable,
         comments: [
           {
             id: 'c3',
@@ -310,7 +311,7 @@ export function demoDetail(item: ReviewItem): PullDetail {
         resolved: false,
         outdated: false,
         canReply: threaded,
-        canResolve: threaded,
+        canResolve: resolvable,
         path: 'internal/payments/capture.go',
         line: 55,
         side: 'new',

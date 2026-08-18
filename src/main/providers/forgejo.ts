@@ -7,7 +7,12 @@
 
 import { request, toOrigin } from '../http.ts'
 import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
-import { forgejoThreads, type ForgejoComment } from './threads.ts'
+import {
+  forgejoThreads,
+  parseForgejoThreadId,
+  type ForgejoComment,
+  type ForgejoReviewComment,
+} from './threads.ts'
 import { parseUnifiedDiff } from '@shared/diff.ts'
 import type {
   Account,
@@ -242,7 +247,7 @@ export const forgejo: Provider = {
   },
 
   async loadDetail(session, item, signal) {
-    const [pull, diff, comments] = await Promise.all([
+    const [pull, diff, comments, reviewComments] = await Promise.all([
       request<FjPull>(api(session, `/repos/${item.repoKey}/pulls/${item.number}`), {
         headers: headers(session),
         signal,
@@ -256,6 +261,7 @@ export const forgejo: Provider = {
         headers: headers(session),
         signal,
       }).catch(() => [] as ForgejoComment[]),
+      loadReviewComments(session, item, signal),
     ])
 
     const files = parseUnifiedDiff(diff)
@@ -273,7 +279,7 @@ export const forgejo: Provider = {
       },
       description: pull.body ?? '',
       files,
-      threads: forgejoThreads(comments),
+      threads: forgejoThreads(comments, reviewComments),
       refs: { headSha: pull.head.sha, baseSha: pull.base.sha },
     }
   },
@@ -307,24 +313,88 @@ export const forgejo: Provider = {
 
   async addLineComment(session, item, draft, refs) {
     // Forgejo attaches inline comments to a review rather than to the PR directly.
-    await request(api(session, `/repos/${item.repoKey}/pulls/${item.number}/reviews`), {
-      method: 'POST',
-      headers: headers(session),
-      body: {
-        event: 'COMMENT',
-        body: '',
-        commit_id: refs.headSha,
-        comments: [
-          {
-            path: draft.path,
-            body: draft.body,
-            new_position: draft.newLine ?? 0,
-            old_position: draft.oldLine ?? 0,
-          },
-        ],
-      },
+    await inlineComment(session, item, refs.headSha, {
+      path: draft.path,
+      body: draft.body,
+      newLine: draft.newLine,
+      oldLine: draft.oldLine,
     })
   },
+
+  /**
+   * A reply is another comment on the same line of the same file, because that is
+   * what a conversation is here - so this is the same call `addLineComment` makes,
+   * aimed at the anchor the thread id carries.
+   */
+  async replyToThread(session, item, threadId, body) {
+    const anchor = parseForgejoThreadId(threadId)
+    if (!anchor) throw new Error('That thread can no longer be replied to; reload and try again.')
+
+    await inlineComment(session, item, undefined, {
+      path: anchor.path,
+      body,
+      newLine: anchor.side === 'new' ? anchor.line : undefined,
+      oldLine: anchor.side === 'old' ? anchor.line : undefined,
+    })
+  },
+}
+
+async function inlineComment(
+  session: Session,
+  item: ReviewItem,
+  commitId: string | undefined,
+  comment: { path: string; body: string; newLine?: number; oldLine?: number },
+): Promise<void> {
+  await request(api(session, `/repos/${item.repoKey}/pulls/${item.number}/reviews`), {
+    method: 'POST',
+    headers: headers(session),
+    body: {
+      event: 'COMMENT',
+      body: '',
+      // Left off, Forgejo uses the pull request's head, which is what we want anyway.
+      commit_id: commitId,
+      comments: [
+        {
+          path: comment.path,
+          body: comment.body,
+          new_position: comment.newLine ?? 0,
+          old_position: comment.oldLine ?? 0,
+        },
+      ],
+    },
+  })
+}
+
+interface FjReview {
+  id: number
+  comments_count?: number
+}
+
+/**
+ * Inline comments hang off reviews rather than off the pull request, so they take a
+ * call per review that has any. Reviews with none are skipped, which is most of
+ * them, and a review that will not load costs its own comments and nothing else.
+ */
+async function loadReviewComments(
+  session: Session,
+  item: ReviewItem,
+  signal?: AbortSignal,
+): Promise<ForgejoReviewComment[]> {
+  const reviews = await request<FjReview[]>(
+    api(session, `/repos/${item.repoKey}/pulls/${item.number}/reviews`),
+    { headers: headers(session), signal },
+  ).catch(() => [] as FjReview[])
+
+  const withComments = reviews.filter((review) => (review.comments_count ?? 1) > 0)
+
+  const batches = await limitConcurrency(withComments, 4, (review) =>
+    request<ForgejoReviewComment[]>(
+      api(session, `/repos/${item.repoKey}/pulls/${item.number}/reviews/${review.id}/comments`),
+      { headers: headers(session), signal },
+    ).catch(() => [] as ForgejoReviewComment[]),
+  )
+
+  return batches.flat()
 }
 
 function emptyChecks(): CheckSummary {

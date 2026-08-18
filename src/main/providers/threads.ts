@@ -54,6 +54,20 @@ export interface ForgejoComment {
   created_at: string
 }
 
+export interface ForgejoReviewComment {
+  id: number
+  user?: { login?: string; avatar_url?: string }
+  body: string
+  created_at: string
+  path?: string
+  /** Line on the new side, or 0 when the comment sits on the old one. */
+  position?: number
+  /** Line on the old side, or 0. Exactly one of the two is set. */
+  original_position?: number
+  /** Who resolved the conversation this comment belongs to, if anyone has. */
+  resolver?: { login?: string } | null
+}
+
 export interface BitbucketComment {
   id: number
   user?: { display_name?: string; links?: { avatar?: { href?: string } } }
@@ -212,19 +226,93 @@ export function githubThreads(
   )
 }
 
-export function forgejoThreads(comments: ForgejoComment[]): CommentThread[] {
-  return loneThreads(
-    comments.map((comment) => ({
-      comment: {
-        id: String(comment.id),
-        author: {
-          name: comment.user?.login ?? 'unknown',
-          avatarUrl: comment.user?.avatar_url ?? '',
-        },
-        body: comment.body,
-        createdAt: comment.created_at,
-      },
-    })),
+/**
+ * Forgejo has the weakest thread identity of the four: a review comment belongs to
+ * a review, and a review is a batch of comments across the whole diff - so there is
+ * no thread object to point at. What it does have is the rule its own UI works by:
+ * a conversation is every comment left on one side of one line of one file.
+ *
+ * So the identifier is synthesised from that anchor, which makes it stable across
+ * refreshes without depending on any id the host might renumber, and readable back
+ * when a reply has to be addressed. All of it stays in the adapter; the renderer
+ * reads capability flags like it does everywhere else.
+ */
+export function forgejoThreadId(path: string, side: 'old' | 'new', line: number): string {
+  // Path last, and everything before it fixed-shape, so a path containing a colon
+  // still parses back out.
+  return `fj:${side}:${line}:${path}`
+}
+
+export function parseForgejoThreadId(
+  id: string,
+): { path: string; side: 'old' | 'new'; line: number } | null {
+  const match = /^fj:(old|new):(\d+):(.+)$/.exec(id)
+  if (!match) return null
+  return { side: match[1] as 'old' | 'new', line: Number(match[2]), path: match[3] }
+}
+
+function forgejoComment(comment: ForgejoComment | ForgejoReviewComment): PullComment {
+  return {
+    id: String(comment.id),
+    author: {
+      name: comment.user?.login ?? 'unknown',
+      avatarUrl: comment.user?.avatar_url ?? '',
+    },
+    body: comment.body,
+    createdAt: comment.created_at,
+  }
+}
+
+/**
+ * Ordinary comments stay threads of one - Forgejo has no notion of replying to a
+ * pull request comment - while review comments group by the line they were left on.
+ *
+ * A reply is another comment at the same anchor, which is how the conversation is
+ * joined, so an inline thread can be replied to. Resolution is a different matter:
+ * the REST API has no endpoint for it at all, so the state is read where the host
+ * reports it and the control is never offered.
+ */
+export function forgejoThreads(
+  comments: ForgejoComment[],
+  reviewComments: ForgejoReviewComment[] = [],
+): CommentThread[] {
+  const threads: CommentThread[] = loneThreads(
+    comments.map((comment) => ({ comment: forgejoComment(comment) })),
+  )
+
+  const conversations = new Map<string, ForgejoReviewComment[]>()
+  for (const comment of reviewComments) {
+    if (!comment.path) continue
+    const side = comment.position ? 'new' : 'old'
+    const line = comment.position || comment.original_position
+    if (!line) continue
+
+    const id = forgejoThreadId(comment.path, side, line)
+    const existing = conversations.get(id)
+    if (existing) existing.push(comment)
+    else conversations.set(id, [comment])
+  }
+
+  for (const [id, group] of conversations) {
+    const anchor = parseForgejoThreadId(id)
+    const ordered = [...group].sort((a, b) => a.created_at.localeCompare(b.created_at))
+
+    threads.push({
+      id,
+      comments: ordered.map(forgejoComment),
+      // Forgejo resolves a whole conversation, so it counts only when all of it is.
+      resolved: ordered.every((comment) => Boolean(comment.resolver)),
+      outdated: false,
+      path: anchor?.path,
+      line: anchor?.line,
+      side: anchor?.side,
+      canReply: true,
+      canResolve: false,
+    })
+  }
+
+  return threads.sort((a, b) =>
+    (a.comments[0]?.createdAt ?? '').localeCompare(b.comments[0]?.createdAt ?? ''),
   )
 }
 
