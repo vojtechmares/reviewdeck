@@ -75,7 +75,12 @@ The pnpm version is pinned in `package.json` under `packageManager`, so `corepac
 enough to get the right one.
 
 To poke at the UI without connecting a real account, run with `REVIEWDECK_DEMO=1` - the deck fills
-with fixtures and the diff viewer renders a sample pull request.
+with fixtures and the diff viewer renders a sample pull request. Both screenshots below are that
+same fixture, the same frame in each theme:
+
+| Light | Dark |
+| --- | --- |
+| ![The diff in the light theme](docs/diff-light.png) | ![The diff in the dark theme](docs/diff-dark.png) |
 
 ## Signing in
 
