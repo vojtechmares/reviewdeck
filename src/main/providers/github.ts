@@ -7,13 +7,20 @@
 
 import { ApiError, paginate, request, toOrigin } from '../http.ts'
 import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
-import { githubThreads, type GithubComment } from './threads.ts'
+import {
+  githubFlatThreads,
+  githubThreads,
+  type GithubComment,
+  type GithubGqlComment,
+  type GithubReviewThread,
+} from './threads.ts'
 import type {
   Account,
   AccountDraft,
   CheckRun,
   CheckStatus,
   CheckSummary,
+  CommentThread,
   DiffFile,
   MyReviewState,
   ReviewItem,
@@ -114,6 +121,92 @@ function rootsFor(host: string): { baseUrl: string; webUrl: string } {
     return { baseUrl: 'https://api.github.com', webUrl: 'https://github.com' }
   }
   return { baseUrl: `${origin}/api/v3`, webUrl: origin }
+}
+
+/**
+ * Where the instance serves GraphQL.
+ *
+ * GitHub.com puts it on the API host; Enterprise Server puts it beside the REST
+ * root on the instance's own host, one path segment up from `/api/v3`.
+ */
+export function graphqlRoot(baseUrl: string): string {
+  const root = baseUrl.replace(/\/+$/, '')
+  return root.endsWith('/api/v3') ? `${root.slice(0, -'/v3'.length)}/graphql` : `${root}/graphql`
+}
+
+interface GraphqlResponse<T> {
+  data?: T | null
+  errors?: { message?: string }[]
+}
+
+/**
+ * A thin layer over the request wrapper, for GitHub only and only where REST
+ * cannot answer: review threads are absent from the REST API entirely, and their
+ * resolution exists nowhere but as a mutation here.
+ */
+async function graphql<T>(
+  session: Session,
+  query: string,
+  variables: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await request<GraphqlResponse<T>>(graphqlRoot(session.account.baseUrl), {
+    method: 'POST',
+    headers: headers(session),
+    body: { query, variables },
+    signal,
+  })
+  // GraphQL answers 200 with an errors array, so a failure has to be read out of
+  // the body rather than the status.
+  if (response.errors?.length) {
+    throw new ApiError(response.errors[0]?.message ?? 'GitHub rejected the query.', 200, 'graphql')
+  }
+  if (!response.data) throw new ApiError('GitHub returned no data.', 200, 'graphql')
+  return response.data
+}
+
+const THREADS_QUERY = `
+query Threads($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          diffSide
+          viewerCanReply
+          viewerCanResolve
+          viewerCanUnresolve
+          comments(first: 50) {
+            nodes { id body createdAt author { login avatarUrl } }
+          }
+        }
+      }
+      comments(first: 100) {
+        nodes { id body createdAt author { login avatarUrl } }
+      }
+    }
+  }
+}`
+
+interface ThreadsQuery {
+  repository?: {
+    pullRequest?: {
+      reviewThreads?: { nodes?: (GithubReviewThread | null)[] | null } | null
+      comments?: { nodes?: (GithubGqlComment | null)[] | null } | null
+    } | null
+  } | null
+}
+
+/** `acme/widgets` -> `{ owner: 'acme', name: 'widgets' }` */
+function splitRepo(repoKey: string): { owner: string; name: string } {
+  const at = repoKey.indexOf('/')
+  return at < 0
+    ? { owner: repoKey, name: repoKey }
+    : { owner: repoKey.slice(0, at), name: repoKey.slice(at + 1) }
 }
 
 /** `https://api.github.com/repos/acme/widgets` -> `acme/widgets` */
@@ -290,7 +383,7 @@ export const github: Provider = {
   },
 
   async loadDetail(session, item, signal) {
-    const [pull, rawFiles, issueComments, reviewComments] = await Promise.all([
+    const [pull, rawFiles, threads] = await Promise.all([
       request<GhPull>(api(session, `/repos/${item.repoKey}/pulls/${item.number}`), {
         headers: headers(session),
         signal,
@@ -300,14 +393,7 @@ export const github: Provider = {
         { headers: headers(session), signal },
         4,
       ),
-      request<GithubComment[]>(
-        api(session, `/repos/${item.repoKey}/issues/${item.number}/comments?per_page=100`),
-        { headers: headers(session), signal },
-      ).catch(() => [] as GithubComment[]),
-      request<GithubComment[]>(
-        api(session, `/repos/${item.repoKey}/pulls/${item.number}/comments?per_page=100`),
-        { headers: headers(session), signal },
-      ).catch(() => [] as GithubComment[]),
+      loadThreads(session, item, signal),
     ])
 
     const files: DiffFile[] = rawFiles.map((file) => ({
@@ -324,9 +410,33 @@ export const github: Provider = {
       item: { ...item, additions: pull.additions, deletions: pull.deletions, changedFiles: pull.changed_files },
       description: pull.body ?? '',
       files,
-      threads: githubThreads(issueComments, reviewComments),
+      threads,
       refs: { headSha: pull.head.sha, baseSha: pull.base.sha },
     }
+  },
+
+  // The thread's global node id is the whole address, so the item is not needed.
+  async replyToThread(session, _item, threadId, body) {
+    await graphql(
+      session,
+      `mutation Reply($threadId: ID!, $body: String!) {
+        addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+          clientMutationId
+        }
+      }`,
+      { threadId, body },
+    )
+  },
+
+  async setThreadResolved(session, _item, threadId, resolved) {
+    const mutation = resolved
+      ? `mutation Resolve($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) { clientMutationId }
+        }`
+      : `mutation Unresolve($threadId: ID!) {
+          unresolveReviewThread(input: { threadId: $threadId }) { clientMutationId }
+        }`
+    await graphql(session, mutation, { threadId })
   },
 
   async refreshChecks(session, item, signal) {
@@ -370,6 +480,51 @@ export const github: Provider = {
       },
     })
   },
+}
+
+/**
+ * Threads for one pull request, over GraphQL because REST has no notion of them.
+ *
+ * An instance that will not answer - an older Enterprise Server, a token GraphQL
+ * turns away - falls back to the flat REST shape, which is what the app showed
+ * before. Losing the thread structure is much better than losing the comments.
+ */
+async function loadThreads(
+  session: Session,
+  item: ReviewItem,
+  signal?: AbortSignal,
+): Promise<CommentThread[]> {
+  const { owner, name } = splitRepo(item.repoKey)
+
+  try {
+    const data = await graphql<ThreadsQuery>(
+      session,
+      THREADS_QUERY,
+      { owner, name, number: item.number },
+      signal,
+    )
+    const pull = data.repository?.pullRequest
+    return githubThreads(
+      (pull?.reviewThreads?.nodes ?? []).filter(
+        (thread): thread is GithubReviewThread => Boolean(thread),
+      ),
+      (pull?.comments?.nodes ?? []).filter(
+        (comment): comment is GithubGqlComment => Boolean(comment),
+      ),
+    )
+  } catch {
+    const [issueComments, reviewComments] = await Promise.all([
+      request<GithubComment[]>(
+        api(session, `/repos/${item.repoKey}/issues/${item.number}/comments?per_page=100`),
+        { headers: headers(session), signal },
+      ).catch(() => [] as GithubComment[]),
+      request<GithubComment[]>(
+        api(session, `/repos/${item.repoKey}/pulls/${item.number}/comments?per_page=100`),
+        { headers: headers(session), signal },
+      ).catch(() => [] as GithubComment[]),
+    ])
+    return githubFlatThreads(issueComments, reviewComments)
+  }
 }
 
 function emptyChecks(): CheckSummary {

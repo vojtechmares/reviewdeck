@@ -106,10 +106,11 @@ function githubAnchored(comment: GithubComment): Anchored {
 }
 
 /**
- * GitHub's review threads and their resolution live only in GraphQL, so over REST
- * every comment stands alone. Issue comments and review comments interleave by age.
+ * The REST shape, kept as the fallback for an instance whose GraphQL endpoint we
+ * cannot reach: every comment stands alone, because review threads simply are not
+ * in the REST API. Issue comments and review comments interleave by age.
  */
-export function githubThreads(
+export function githubFlatThreads(
   issueComments: GithubComment[],
   reviewComments: GithubComment[],
 ): CommentThread[] {
@@ -117,6 +118,98 @@ export function githubThreads(
     .map(githubAnchored)
     .sort((a, b) => a.comment.createdAt.localeCompare(b.comment.createdAt))
   return loneThreads(anchored)
+}
+
+export interface GithubGqlComment {
+  id: string
+  body: string
+  createdAt: string
+  author?: { login?: string | null; avatarUrl?: string | null } | null
+}
+
+export interface GithubReviewThread {
+  id: string
+  isResolved?: boolean
+  isOutdated?: boolean
+  path?: string | null
+  /** The line in the current diff; null once the thread has gone outdated. */
+  line?: number | null
+  diffSide?: string | null
+  viewerCanReply?: boolean
+  viewerCanResolve?: boolean
+  viewerCanUnresolve?: boolean
+  comments?: { nodes?: (GithubGqlComment | null)[] | null } | null
+}
+
+function gqlComment(comment: GithubGqlComment): PullComment {
+  return {
+    id: comment.id,
+    author: {
+      name: comment.author?.login ?? 'unknown',
+      avatarUrl: comment.author?.avatarUrl ?? '',
+    },
+    body: comment.body,
+    createdAt: comment.createdAt,
+  }
+}
+
+/**
+ * The GraphQL shape, which is the only place GitHub keeps review threads and the
+ * only way their resolution can be read or changed.
+ *
+ * An outdated thread carries its file but no line. GitHub still reports the line it
+ * was originally left on, and using that was the defect: in the diff as it stands
+ * now that number is a different line, so the app pointed some comments at code
+ * their author never saw. Better to say where the thread belongs and not pretend to
+ * know where in it.
+ *
+ * Whether a thread can be resolved depends on which way it would go, so the flag is
+ * read from whichever of the two the viewer would actually be doing.
+ */
+export function githubThreads(
+  reviewThreads: GithubReviewThread[],
+  issueComments: GithubGqlComment[],
+): CommentThread[] {
+  const threads: CommentThread[] = []
+
+  for (const thread of reviewThreads) {
+    const comments = (thread.comments?.nodes ?? [])
+      .filter((comment): comment is GithubGqlComment => Boolean(comment))
+      .map(gqlComment)
+    if (!comments.length) continue
+
+    const outdated = thread.isOutdated === true
+    const resolved = thread.isResolved === true
+
+    threads.push({
+      id: thread.id,
+      comments,
+      resolved,
+      outdated,
+      path: thread.path ?? undefined,
+      line: outdated ? undefined : (thread.line ?? undefined),
+      side: thread.diffSide === 'LEFT' ? 'old' : thread.path ? 'new' : undefined,
+      canReply: thread.viewerCanReply === true,
+      canResolve: resolved ? thread.viewerCanUnresolve === true : thread.viewerCanResolve === true,
+    })
+  }
+
+  // An ordinary issue comment is not a review thread and nothing can be replied
+  // into it, so it stays a thread of one with neither affordance.
+  for (const comment of issueComments) {
+    threads.push({
+      id: comment.id,
+      comments: [gqlComment(comment)],
+      resolved: false,
+      outdated: false,
+      canReply: false,
+      canResolve: false,
+    })
+  }
+
+  return threads.sort((a, b) =>
+    (a.comments[0]?.createdAt ?? '').localeCompare(b.comments[0]?.createdAt ?? ''),
+  )
 }
 
 export function forgejoThreads(comments: ForgejoComment[]): CommentThread[] {

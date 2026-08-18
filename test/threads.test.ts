@@ -3,12 +3,13 @@ import assert from 'node:assert/strict'
 import {
   bitbucketThreads,
   forgejoThreads,
+  githubFlatThreads,
   githubThreads,
   gitlabThreads,
 } from '../src/main/providers/threads.ts'
 
-test('githubThreads gives every comment its own thread with no affordances', () => {
-  const threads = githubThreads(
+test('githubFlatThreads gives every comment its own thread with no affordances', () => {
+  const threads = githubFlatThreads(
     [
       {
         id: 1,
@@ -52,8 +53,8 @@ test('githubThreads gives every comment its own thread with no affordances', () 
   assert.equal(threads[1].line, undefined)
 })
 
-test('githubThreads falls back to the original line and reads the left side', () => {
-  const [thread] = githubThreads(
+test('githubFlatThreads falls back to the original line and reads the left side', () => {
+  const [thread] = githubFlatThreads(
     [],
     [
       {
@@ -266,4 +267,150 @@ test('gitlabThreads flags a thread left against a diff that has moved on', () =>
   assert.equal(gitlabThreads([discussion], 'old-head')[0].outdated, false)
   // Without a head to compare against, saying it is outdated would be a guess.
   assert.equal(gitlabThreads([discussion])[0].outdated, false)
+})
+
+const NOW = '2026-08-05T08:00:00Z'
+
+function gqlComment(id: string, body: string, at = NOW): {
+  id: string
+  body: string
+  createdAt: string
+  author: { login: string; avatarUrl: string }
+} {
+  return { id, body, createdAt: at, author: { login: 'mnovotna', avatarUrl: 'https://gh.test/m.png' } }
+}
+
+test('githubThreads keeps a review thread whole and reads both capabilities off it', () => {
+  const [thread] = githubThreads(
+    [
+      {
+        id: 'RT_1',
+        isResolved: false,
+        isOutdated: false,
+        path: 'internal/capture.go',
+        line: 55,
+        diffSide: 'RIGHT',
+        viewerCanReply: true,
+        viewerCanResolve: true,
+        viewerCanUnresolve: false,
+        comments: {
+          nodes: [gqlComment('C_1', 'Can this go into config?'), gqlComment('C_2', 'Follow-up.')],
+        },
+      },
+    ],
+    [],
+  )
+
+  assert.equal(thread.id, 'RT_1')
+  assert.deepEqual(
+    thread.comments.map((comment) => comment.id),
+    ['C_1', 'C_2'],
+  )
+  assert.equal(thread.canReply, true)
+  assert.equal(thread.canResolve, true)
+  assert.equal(thread.resolved, false)
+  assert.equal(thread.outdated, false)
+  assert.equal(thread.path, 'internal/capture.go')
+  assert.equal(thread.line, 55)
+  assert.equal(thread.side, 'new')
+  assert.equal(thread.comments[0].author.avatarUrl, 'https://gh.test/m.png')
+})
+
+test('githubThreads reads resolvability from whichever way the thread would go', () => {
+  const base = {
+    id: 'RT_2',
+    path: 'a.ts',
+    line: 3,
+    comments: { nodes: [gqlComment('C_3', 'Dealt with?')] },
+  }
+
+  // An unresolved thread is resolvable when the viewer may resolve it...
+  const [open] = githubThreads(
+    [{ ...base, isResolved: false, viewerCanResolve: true, viewerCanUnresolve: false }],
+    [],
+  )
+  assert.equal(open.canResolve, true)
+
+  // ...and a resolved one when the viewer may reopen it, which is the other flag.
+  const [closed] = githubThreads(
+    [{ ...base, isResolved: true, viewerCanResolve: false, viewerCanUnresolve: true }],
+    [],
+  )
+  assert.equal(closed.resolved, true)
+  assert.equal(closed.canResolve, true)
+
+  const [locked] = githubThreads(
+    [{ ...base, isResolved: true, viewerCanResolve: true, viewerCanUnresolve: false }],
+    [],
+  )
+  assert.equal(locked.canResolve, false, 'a resolved thread is not reopenable just because it was resolvable')
+})
+
+test('githubThreads never anchors an outdated thread to a line', () => {
+  // The defect this fixes: GitHub reports the line the thread was originally left
+  // on, and in the diff as it stands that number is a different line entirely.
+  const [thread] = githubThreads(
+    [
+      {
+        id: 'RT_3',
+        isOutdated: true,
+        path: 'internal/capture.go',
+        line: null,
+        diffSide: 'RIGHT',
+        comments: { nodes: [gqlComment('C_4', 'This moved.')] },
+      },
+    ],
+    [],
+  )
+
+  assert.equal(thread.outdated, true)
+  assert.equal(thread.line, undefined)
+  // The file is kept, so the thread can still be shown against the file it belongs to.
+  assert.equal(thread.path, 'internal/capture.go')
+})
+
+test('githubThreads keeps an issue comment a thread of one with no affordances', () => {
+  const threads = githubThreads([], [gqlComment('IC_1', 'Looks good overall.')])
+
+  assert.equal(threads.length, 1)
+  assert.equal(threads[0].comments.length, 1)
+  assert.equal(threads[0].canReply, false, 'an issue comment is not a review thread')
+  assert.equal(threads[0].canResolve, false)
+  assert.equal(threads[0].path, undefined)
+})
+
+test('githubThreads orders review threads and issue comments together by age', () => {
+  const threads = githubThreads(
+    [
+      {
+        id: 'RT_4',
+        path: 'a.ts',
+        line: 1,
+        comments: { nodes: [gqlComment('C_5', 'second', '2026-08-05T09:00:00Z')] },
+      },
+    ],
+    [gqlComment('IC_2', 'first', '2026-08-05T08:00:00Z')],
+  )
+
+  assert.deepEqual(
+    threads.map((thread) => thread.comments[0].body),
+    ['first', 'second'],
+  )
+})
+
+test('githubThreads drops a thread whose comments have all gone', () => {
+  const threads = githubThreads(
+    [
+      { id: 'RT_5', path: 'a.ts', line: 1, comments: { nodes: [] } },
+      { id: 'RT_6', path: 'a.ts', line: 2, comments: null },
+      { id: 'RT_7', path: 'a.ts', line: 3, comments: { nodes: [null, gqlComment('C_6', 'here')] } },
+    ],
+    [],
+  )
+
+  assert.deepEqual(
+    threads.map((thread) => thread.id),
+    ['RT_7'],
+  )
+  assert.equal(threads[0].comments.length, 1)
 })

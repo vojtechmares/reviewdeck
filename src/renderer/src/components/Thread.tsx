@@ -54,15 +54,26 @@ export function ThreadCard({
         thread.resolved && 'opacity-60',
       )}
     >
-      {(thread.resolved || thread.outdated) && (
-        <div className="mb-1.5 flex items-center gap-1.5">
+      {(thread.resolved || thread.outdated || (thread.path && !dense)) && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
           {thread.resolved && (
             <Badge tone="ok">
               <Check className="size-3" />
               Resolved
             </Badge>
           )}
-          {thread.outdated && <Badge>Outdated</Badge>}
+          {thread.outdated && <Badge tone="busy">Outdated</Badge>}
+          {/*
+            * Away from the diff, the file is the only thing placing the thread -
+            * and an outdated one carries no line, deliberately, because the line it
+            * was left on means something else in the diff as it stands now.
+            */}
+          {thread.path && !dense && (
+            <span className="mono truncate !text-[11px] text-muted-foreground">
+              {thread.path}
+              {thread.line !== undefined && `:${thread.line}`}
+            </span>
+          )}
         </div>
       )}
 

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { limitConcurrency, rollUp, summariseChecks } from '../src/main/providers/types.ts'
+import { graphqlRoot } from '../src/main/providers/github.ts'
 import type { CheckStatus } from '../src/shared/types.ts'
 
 test('rollUp lets the worst status win', () => {
@@ -50,4 +51,17 @@ test('limitConcurrency preserves order and caps parallelism', async () => {
 
 test('limitConcurrency handles an empty list', async () => {
   assert.deepEqual(await limitConcurrency([], 4, async () => 1), [])
+})
+
+test('graphqlRoot follows GitHub.com and Enterprise Server apart', () => {
+  // GitHub.com serves GraphQL on the API host it already uses.
+  assert.equal(graphqlRoot('https://api.github.com'), 'https://api.github.com/graphql')
+
+  // Enterprise Server serves it beside the REST root, one segment up from /api/v3.
+  assert.equal(graphqlRoot('https://github.acme.com/api/v3'), 'https://github.acme.com/api/graphql')
+  assert.equal(graphqlRoot('https://github.acme.com/api/v3/'), 'https://github.acme.com/api/graphql')
+  assert.equal(
+    graphqlRoot('https://acme.dev/github/api/v3'),
+    'https://acme.dev/github/api/graphql',
+  )
 })

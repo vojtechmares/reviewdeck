@@ -22,7 +22,8 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
   app in both light and dark, with inline comments on any line and existing review comments
   anchored where they were left.
 - **Threaded conversations.** Replies sit under what they answer, and where the host supports it
-  you can reply and resolve without leaving the app.
+  you can reply and resolve without leaving the app. A comment on code that has since changed is
+  labelled outdated rather than pointed at whatever now sits on that line.
 - **Descriptions and comments as Markdown**, GitHub-flavoured and rendered through a
   sanitizer, so collapsible bot reports, tables and checklists read the way their author
   meant them to.
@@ -83,12 +84,19 @@ renderer process - the UI only ever asks the main process to make a call on its 
 
 | Provider | Where to create one | Scopes needed |
 | --- | --- | --- |
-| GitHub / GHES | Settings → Developer settings → Personal access tokens | `repo`, `read:org` |
+| GitHub / GHES | Settings → Developer settings → Personal access tokens | `repo`, `read:org` (classic) · Pull requests: Read and write, Contents: Read, Metadata: Read (fine-grained) |
 | GitLab | Settings → Access tokens | `api` |
 | Forgejo / Gitea | Settings → Applications | issue: Read and write, repository: Read and write, user: Read |
 | Bitbucket Cloud | Personal settings → App passwords | Account: Read, Pull requests: Write |
 
 Bitbucket app passwords authenticate as a username/password pair, so it asks for your username too.
+
+GitHub asks for more than reading, which is worth a word since this is a tool that mostly reads.
+Resolving a review thread exists nowhere but as a GraphQL mutation - the REST API does not expose
+review threads at all - and a mutation counts as writing however little it changes. A classic
+token's `repo` already covers it, so nothing changed there; a fine-grained token has to grant
+**Pull requests: Read and write** for the same reason. Neither grants write access to your code:
+`Contents: Read` is what fetches the diff, and Reviewdeck never pushes anything.
 
 ## How it fits together
 
@@ -134,7 +142,10 @@ Each host makes a different part of this hard:
 
 - **GitHub** aggregates cheaply (`search/issues?q=review-requested:@me`) but needs a follow-up call
   per pull request for the diff stats, and check runs and legacy commit statuses are two separate
-  endpoints that both have to be merged.
+  endpoints that both have to be merged. It is also the one host that needs GraphQL: review
+  threads are absent from the REST API and resolution exists only as a mutation, so threads come
+  from a single GraphQL query and fall back to the flat REST shape if an instance will not answer
+  it.
 - **GitLab** is the friendliest: `scope=reviews_for_me` does the aggregation server-side. In
   exchange, line comments need the base/start/head SHAs from the MR versions endpoint, and there is
   no single "submit review" call - approving and commenting are separate requests.
@@ -159,9 +170,8 @@ This is an MVP.
 - macOS only.
 - Bitbucket Server (the self-hosted one) uses a different API and is not supported; Bitbucket Cloud is.
 - Syntax highlighting covers a common set of languages; a file outside it reads as plain text.
-- Replying to a thread and resolving one work on GitLab. On GitHub, Forgejo and Bitbucket every
-  comment still arrives as a thread of its own, with no reply or resolve offered - GitHub's
-  review threads and their resolution live only in its GraphQL API.
+- Replying to a thread and resolving one work on GitHub and GitLab. On Forgejo and Bitbucket every
+  comment still arrives as a thread of its own, with no reply or resolve offered.
 
 Features are implemented here rather than pulled in, with one standing exception: parsing
 and rendering content that other people wrote. Markdown goes through `react-markdown`,

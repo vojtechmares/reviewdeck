@@ -256,7 +256,8 @@ index 2b4c5d6..9e8f7a1 100644
 `
 
 export function demoDetail(item: ReviewItem): PullDetail {
-  const threaded = item.provider === 'gitlab'
+  // GitHub and GitLab both have real threads now; the rest are still flat.
+  const threaded = item.provider === 'gitlab' || item.provider === 'github'
   return {
     item,
     description:
@@ -265,8 +266,8 @@ export function demoDetail(item: ReviewItem): PullDetail {
       'failures with a capped exponential backoff and only gives up on a permanent error.\n\n' +
       'Closes ACME-2214.',
     files: parseUnifiedDiff(DEMO_DIFF),
-    // Only GitLab can reply and resolve so far, so the fixture mirrors that: on any
-    // other host the same conversation arrives as threads with no affordances.
+    // The fixture mirrors the capability model: on a host without real threads the
+    // same conversation arrives as threads with no affordances.
     threads: [
       {
         id: 't1',

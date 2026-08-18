@@ -71,11 +71,23 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
     }
   }, [item.id])
 
-  const conversation = useMemo(
-    () => (detail?.threads ?? []).filter((thread) => !thread.path),
-    [detail],
-  )
-  const inlineCount = (detail?.threads.length ?? 0) - conversation.length
+  /**
+   * Threads the diff can actually show, and everything else.
+   *
+   * A thread needs a file, a line, and a file the diff still carries. An outdated
+   * thread has no line by design, and a thread on a file this diff does not touch
+   * has nowhere to sit - so both belong in the conversation rather than silently
+   * disappearing between the two views.
+   */
+  const [inline, conversation] = useMemo(() => {
+    const threads = detail?.threads ?? []
+    const paths = new Set((detail?.files ?? []).map((file) => file.path))
+    const anchored = threads.filter(
+      (thread) => thread.path && thread.line !== undefined && paths.has(thread.path),
+    )
+    return [anchored, threads.filter((thread) => !anchored.includes(thread))]
+  }, [detail])
+  const inlineCount = inline.length
 
   const openExternal = useCallback((url: string) => {
     void window.reviewdeck.app.openExternal(url)
@@ -292,7 +304,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
               {tab === 'diff' && (
                 <DiffView
                   files={detail.files}
-                  threads={detail.threads}
+                  threads={inline}
                   mode={settings.diffView}
                   onComment={addLineComment}
                   onReply={replyToThread}
