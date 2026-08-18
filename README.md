@@ -27,7 +27,7 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
   labelled outdated rather than pointed at whatever now sits on that line.
 - **Descriptions and comments as Markdown**, GitHub-flavoured and rendered through a
   sanitizer, so collapsible bot reports, tables and checklists read the way their author
-  meant them to.
+  meant them to - fenced code included, highlighted by the same thing the diff is.
 - **A pending review.** Line comments accumulate as drafts you can edit and drop, kept per pull
   request and across restarts, and submitted together with one verdict - so the author gets one
   coherent review instead of a notification per remark.

@@ -21,7 +21,7 @@ import { bundledLanguages } from 'shiki/langs'
 import vitesseDark from 'shiki/themes/vitesse-dark.mjs'
 import vitesseLight from 'shiki/themes/vitesse-light.mjs'
 import type { DiffHunk, DiffLine } from '@shared/diff'
-import { hunkTokens, sideText } from '@shared/highlight'
+import { hunkTokens, languageFor, sideText } from '@shared/highlight'
 
 /** One run of characters sharing a colour. */
 export interface Token {
@@ -117,4 +117,53 @@ function tokenize(
   return tokens.map((line) =>
     line.map((token) => ({ content: token.content, style: token.htmlStyle })),
   )
+}
+
+/**
+ * The language a fence tag means, or null when nothing here knows.
+ *
+ * The registry answers most of it, aliases included, so ```ts and ```yml resolve
+ * without a table of our own. What it does not know is asked of the extension map,
+ * which rescues the tags that are really file extensions - ```patch, ```conf - and
+ * is the same map the diff resolves paths through. What is left is the short list
+ * below: tags people write that are neither, and would otherwise read as prose.
+ */
+const FENCE_ALIASES: Record<string, string> = {
+  golang: 'go',
+  'shell-session': 'shellscript',
+}
+
+function fenceLanguage(tag: string): string | null {
+  const lower = tag.toLowerCase()
+  if (lower in bundledLanguages) return lower
+  return FENCE_ALIASES[lower] ?? languageFor(`fence.${lower}`)
+}
+
+/**
+ * Tokens for a fenced code block, or null when the fence carries no language this
+ * build can resolve - in which case it stays the preformatted text it already was.
+ *
+ * The same highlighter, themes and grammar cache as the diff: a snippet in a
+ * description and the code it is about are coloured by one thing, and a grammar
+ * fetched for either serves both.
+ */
+export async function highlightCode(code: string, tag: string): Promise<Token[][] | null> {
+  const language = fenceLanguage(tag)
+  if (!language) return null
+
+  try {
+    const shiki = await highlighter()
+    if (!(await loadGrammar(shiki, language))) return null
+
+    const { tokens } = shiki.codeToTokens(code, {
+      lang: language,
+      themes: THEMES,
+      defaultColor: false,
+    })
+    return tokens.map((line) =>
+      line.map((token) => ({ content: token.content, style: token.htmlStyle })),
+    )
+  } catch {
+    return null
+  }
 }

@@ -2,9 +2,12 @@ import {
   Children,
   cloneElement,
   createContext,
+  Fragment,
   isValidElement,
   useContext,
+  useEffect,
   useMemo,
+  useState,
   type ReactNode,
 } from 'react'
 import {
@@ -27,6 +30,8 @@ import {
 } from '@shared/markdown'
 import type { AlertKind, AutolinkContext } from '@shared/markdown'
 import type { ImageContext } from '@shared/images'
+import type { Element } from 'hast'
+import { highlightCode, type Token } from '@/lib/highlight'
 import { cn } from '@/lib/utils'
 
 /**
@@ -117,7 +122,97 @@ function withoutMarker(children: ReactNode): ReactNode {
   })
 }
 
-const COMPONENTS: Components = { blockquote: Blockquote }
+const FENCE_LANGUAGE = /(?:^|\s)language-([\w.+#-]+)/
+
+/** Everything a hast subtree says, which for a fenced block is its source. */
+function textOf(node: Element | undefined): string {
+  if (!node) return ''
+  return node.children
+    .map((child) =>
+      child.type === 'text' ? child.value : child.type === 'element' ? textOf(child) : '',
+    )
+    .join('')
+}
+
+/**
+ * Inline code, and fences with no language tag, keep the preformatted rendering
+ * they already had. Only a tagged fence goes to the highlighter, and it does so in
+ * a component of its own so an ordinary code span costs nothing.
+ */
+function Code({
+  node,
+  className,
+  children,
+  ...props
+}: React.JSX.IntrinsicElements['code'] & ExtraProps): React.JSX.Element {
+  const tag = FENCE_LANGUAGE.exec(className ?? '')?.[1]
+  if (!tag) {
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    )
+  }
+
+  return (
+    <HighlightedCode tag={tag} source={textOf(node)} className={className} {...props}>
+      {children}
+    </HighlightedCode>
+  )
+}
+
+function HighlightedCode({
+  tag,
+  source,
+  className,
+  children,
+  ...props
+}: React.JSX.IntrinsicElements['code'] & {
+  tag: string
+  source: string
+}): React.JSX.Element {
+  const [tokens, setTokens] = useState<Token[][] | null>(null)
+
+  // Colour arrives after the block does, exactly as it does in the diff: a snippet
+  // is readable the moment it renders, and a grammar never stands in front of it.
+  useEffect(() => {
+    setTokens(null)
+    if (!source) return
+
+    let cancelled = false
+    void highlightCode(source.replace(/\n$/, ''), tag).then((result) => {
+      if (!cancelled) setTokens(result)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [source, tag])
+
+  if (!tokens) {
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    )
+  }
+
+  return (
+    <code className={className} {...props}>
+      {tokens.map((line, index) => (
+        <Fragment key={index}>
+          {index > 0 && '\n'}
+          {line.map((token, position) => (
+            <span key={position} className="tok" style={token.style as React.CSSProperties}>
+              {token.content}
+            </span>
+          ))}
+        </Fragment>
+      ))}
+    </code>
+  )
+}
+
+const COMPONENTS: Components = { blockquote: Blockquote, code: Code }
 
 /** Everything a body needs to resolve against the pull request it belongs to. */
 export type MarkdownTargets = AutolinkContext & ImageContext

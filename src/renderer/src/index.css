@@ -389,7 +389,11 @@
     font-variant-ligatures: none;
   }
 
-  /* Fenced blocks are plain preformatted text for now; highlighting is its own change. */
+  /*
+   * Fenced blocks are highlighted by the same thing the diff is, so a snippet in a
+   * description and the code it is about are coloured alike. A fence with no
+   * language, or one nothing recognises, keeps the preformatted rendering below.
+   */
   .md pre {
     overflow-x: auto;
     padding: 0.7em 0.85em;
