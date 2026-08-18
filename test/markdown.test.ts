@@ -8,7 +8,9 @@ import {
   alertKindOf,
   REHYPE_PLUGINS,
   REMARK_PLUGINS,
+  remarkAutolink,
   SANITIZE_SCHEMA,
+  type AutolinkContext,
 } from '../src/shared/markdown.ts'
 
 /**
@@ -266,4 +268,86 @@ test('alertKindOf refuses a malformed or unknown marker', async () => {
     ),
     [null, null, null, null],
   )
+})
+
+const GITHUB: AutolinkContext = {
+  provider: 'github',
+  webUrl: 'https://github.com',
+  repoRoot: 'https://github.com/acme/api',
+}
+
+/** The pipeline as the renderer runs it, with the autolink transform in place. */
+async function renderLinked(source: string, context: AutolinkContext | null = GITHUB): Promise<Root> {
+  const processor = unified()
+    .use(remarkParse)
+    .use(REMARK_PLUGINS)
+    .use([[remarkAutolink, context]])
+    .use(remarkRehype, { allowDangerousHtml: true })
+    .use(REHYPE_PLUGINS)
+  return processor.run(processor.parse(source)) as Promise<Root>
+}
+
+test('the transform links mentions and references in prose', async () => {
+  const tree = await renderLinked('cc @mnovotna about #412')
+
+  assert.deepEqual(
+    elements(tree, 'a').map((anchor) => [anchor.properties.href, text(anchor)]),
+    [
+      ['https://github.com/mnovotna', '@mnovotna'],
+      ['https://github.com/acme/api/issues/412', '#412'],
+    ],
+  )
+})
+
+test('the transform leaves a reference inside a code span as literal text', async () => {
+  // This is the whole reason the transform walks the syntax tree rather than the
+  // source: a code sample discussing a number must survive it.
+  const tree = await renderLinked('use `#412` and `@mnovotna` verbatim')
+
+  assert.equal(elements(tree, 'a').length, 0)
+  assert.deepEqual(
+    elements(tree, 'code').map(text),
+    ['#412', '@mnovotna'],
+  )
+})
+
+test('the transform leaves a fenced block alone', async () => {
+  const tree = await renderLinked(['```js', '// see #412 from @mnovotna', '```'].join('\n'))
+
+  assert.equal(elements(tree, 'a').length, 0)
+  assert.match(text(elements(tree, 'pre')[0]), /see #412 from @mnovotna/)
+})
+
+test('the transform does not link inside an already-linked URL', async () => {
+  const tree = await renderLinked('https://example.test/@someone/repo')
+
+  const anchors = elements(tree, 'a')
+  assert.equal(anchors.length, 1)
+  assert.equal(anchors[0].properties.href, 'https://example.test/@someone/repo')
+})
+
+test('the transform leaves a reference plain where the host has no path for it', async () => {
+  const tree = await renderLinked('see #412 and @someone', {
+    provider: 'bitbucket',
+    webUrl: 'https://bitbucket.org',
+    repoRoot: 'https://bitbucket.org/acme/web',
+  })
+
+  assert.equal(elements(tree, 'a').length, 0)
+  assert.match(text(tree), /see #412 and @someone/)
+})
+
+test('the transform renders emoji in prose but not inside code', async () => {
+  const tree = await renderLinked('Shipped :tada: but `:tada:` stays, and :nope: is unknown')
+
+  assert.match(text(tree), /Shipped 🎉/)
+  assert.equal(text(elements(tree, 'code')[0]), ':tada:')
+  assert.match(text(tree), /:nope: is unknown/)
+})
+
+test('the transform renders emoji even with no host to link against', async () => {
+  const tree = await renderLinked('Shipped :rocket:', null)
+
+  assert.match(text(tree), /Shipped 🚀/)
+  assert.equal(elements(tree, 'a').length, 0)
 })

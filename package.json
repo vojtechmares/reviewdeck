@@ -19,10 +19,10 @@
     "dist": "pnpm run build && electron-builder --mac --publish never --config electron-builder.yml",
     "dist:dir": "pnpm run build && electron-builder --mac --dir --config electron-builder.yml"
   },
-  "dependencies": {},
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@types/hast": "^3.0.5",
+    "@types/mdast": "^4.0.4",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

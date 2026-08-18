@@ -1,4 +1,12 @@
-import { Children, cloneElement, isValidElement, type ReactNode } from 'react'
+import {
+  Children,
+  cloneElement,
+  createContext,
+  isValidElement,
+  useContext,
+  useMemo,
+  type ReactNode,
+} from 'react'
 import {
   Info,
   Lightbulb,
@@ -8,8 +16,15 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown'
-import { ALERT_MARKER, alertKindOf, REHYPE_PLUGINS, REMARK_PLUGINS } from '@shared/markdown'
-import type { AlertKind } from '@shared/markdown'
+import type { PluggableList } from 'unified'
+import {
+  ALERT_MARKER,
+  alertKindOf,
+  REHYPE_PLUGINS,
+  REMARK_PLUGINS,
+  remarkAutolink,
+} from '@shared/markdown'
+import type { AlertKind, AutolinkContext } from '@shared/markdown'
 import { cn } from '@/lib/utils'
 
 /**
@@ -103,6 +118,25 @@ function withoutMarker(children: ReactNode): ReactNode {
 const COMPONENTS: Components = { blockquote: Blockquote }
 
 /**
+ * Which host a body was written on, so `@someone` and `#123` resolve there.
+ *
+ * A context rather than a prop, because markdown is rendered several levels down -
+ * a comment inside a thread inside a diff row - and every one of those surfaces
+ * belongs to the same pull request anyway.
+ */
+const AutolinkTargets = createContext<AutolinkContext | null>(null)
+
+export function MarkdownLinks({
+  value,
+  children,
+}: {
+  value: AutolinkContext
+  children: ReactNode
+}): React.JSX.Element {
+  return <AutolinkTargets.Provider value={value}>{children}</AutolinkTargets.Provider>
+}
+
+/**
  * Every markdown surface in the app renders through here - descriptions, comments,
  * and whatever comes next - so a body reads the same wherever it appears.
  *
@@ -124,10 +158,17 @@ export function Markdown({
   compact?: boolean
   className?: string
 }): React.JSX.Element {
+  const targets = useContext(AutolinkTargets)
+  // Emoji renders with or without a host; only the links need one.
+  const remarkPlugins = useMemo<PluggableList>(
+    () => [...REMARK_PLUGINS, [remarkAutolink, targets]],
+    [targets],
+  )
+
   return (
     <div className={cn('md', compact && 'md-compact', className)}>
       <ReactMarkdown
-        remarkPlugins={REMARK_PLUGINS}
+        remarkPlugins={remarkPlugins}
         rehypePlugins={REHYPE_PLUGINS}
         components={COMPONENTS}
       >

@@ -11,10 +11,13 @@
  * request body written by someone else and the app.
  */
 import type { Element } from 'hast'
+import type { Nodes, Parent, PhrasingContent, Root, Text } from 'mdast'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize, { defaultSchema, type Options as SanitizeSchema } from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
-import type { PluggableList } from 'unified'
+import type { Plugin, PluggableList } from 'unified'
+import { autolinkSpans, issueUrl, mentionUrl, renderEmoji } from './autolink.ts'
+import type { ProviderKind } from './types.ts'
 
 /**
  * Elements real pull request bodies lean on: collapsible sections for long bot
@@ -83,4 +86,94 @@ export function alertKindOf(blockquote: Element): AlertKind | null {
 
   const match = ALERT_MARKER.exec(first.value)
   return match ? (match[1].toLowerCase() as AlertKind) : null
+}
+
+export interface AutolinkContext {
+  provider: ProviderKind
+  /** Host web root, which is where profiles live. */
+  webUrl: string
+  /** Repository web root, or null when it could not be recovered from the item URL. */
+  repoRoot: string | null
+}
+
+/** Node types whose text is not prose: their contents must survive untouched. */
+const OPAQUE = new Set(['code', 'inlineCode', 'html', 'link', 'linkReference', 'definition'])
+
+/**
+ * Turns `@someone`, `#123` and `:tada:` into what they mean.
+ *
+ * A transform over the syntax tree, not over the source: only `text` nodes are
+ * visited, so a reference inside a code span is left as the literal text it is,
+ * and a mention inside an already-linked URL is not linked twice.
+ */
+export const remarkAutolink: Plugin<[AutolinkContext | null], Root> = (context) => {
+  return (tree: Root): void => {
+    visit(tree)
+  }
+
+  function visit(node: Nodes): void {
+    if (!('children' in node)) return
+    const parent = node as Parent
+
+    const next: PhrasingContent[] = []
+    let changed = false
+
+    for (const child of parent.children) {
+      if (OPAQUE.has(child.type)) {
+        next.push(child as PhrasingContent)
+        continue
+      }
+      if (child.type !== 'text') {
+        visit(child as Nodes)
+        next.push(child as PhrasingContent)
+        continue
+      }
+
+      const pieces = split(child)
+      if (pieces.length !== 1 || pieces[0] !== child) changed = true
+      next.push(...pieces)
+    }
+
+    if (changed) parent.children = next as Parent['children']
+  }
+
+  /** One text node in, that node's text and links out. */
+  function split(node: Text): PhrasingContent[] {
+    const spans = context ? autolinkSpans(node.value) : []
+    if (!spans.length) {
+      const rendered = renderEmoji(node.value)
+      if (rendered === node.value) return [node]
+      return [{ type: 'text', value: rendered }]
+    }
+
+    const out: PhrasingContent[] = []
+    let cursor = 0
+
+    for (const span of spans) {
+      const url =
+        span.kind === 'mention'
+          ? mentionUrl(context!.provider, context!.webUrl, span.handle)
+          : issueUrl(context!.provider, context!.repoRoot, span.number)
+
+      // No path on this host means the text stays as it is rather than becoming a
+      // link that goes nowhere.
+      if (!url) continue
+
+      if (span.start > cursor) {
+        out.push({ type: 'text', value: renderEmoji(node.value.slice(cursor, span.start)) })
+      }
+      out.push({ type: 'link', url, children: [{ type: 'text', value: span.text }] })
+      cursor = span.end
+    }
+
+    if (!out.length) {
+      const rendered = renderEmoji(node.value)
+      return rendered === node.value ? [node] : [{ type: 'text', value: rendered }]
+    }
+
+    if (cursor < node.value.length) {
+      out.push({ type: 'text', value: renderEmoji(node.value.slice(cursor)) })
+    }
+    return out
+  }
 }

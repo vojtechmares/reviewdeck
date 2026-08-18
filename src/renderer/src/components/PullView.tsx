@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import type { LineCommentDraft, PullDetail, ReviewItem, ReviewVerdict } from '@shared/types'
 import { agentCommand } from '@shared/agent-prompt'
+import { repositoryRoot } from '@shared/autolink'
 import { cn, relativeTime } from '@/lib/utils'
 import { errorMessage, useApp } from '@/hooks/useApp'
 import { Avatar } from './ui/avatar'
@@ -25,7 +26,7 @@ import { useToast } from './ui/toast'
 import { CheckPill } from './CheckPill'
 import { ChecksPanel } from './ChecksPanel'
 import { DiffView } from './DiffView'
-import { Markdown } from './Markdown'
+import { Markdown, MarkdownLinks } from './Markdown'
 import { ProviderIcon } from './ProviderIcon'
 import { ThreadCard } from './Thread'
 
@@ -165,214 +166,226 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
 
   const canSubmit = (verdict === 'approve' || body.trim().length > 0) && !submitting
 
+  // Where `@someone` and `#123` in this pull request's prose should point.
+  const autolink = useMemo(
+    () => ({
+      provider: item.provider,
+      webUrl: accountFor(item.accountId)?.webUrl ?? '',
+      repoRoot: repositoryRoot(item),
+    }),
+    [accountFor, item],
+  )
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="glass-quiet shrink-0 border-b border-border px-5 pt-3 pb-0">
-        <div className="flex items-start gap-3">
-          <Avatar src={item.author.avatarUrl} name={item.author.name} className="mt-0.5 size-7" />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-              <ProviderIcon kind={item.provider} className="size-3 opacity-70" />
-              <span className="truncate font-medium">{item.repo}</span>
-              <span className="opacity-60">#{item.number}</span>
-              <span className="opacity-50">·</span>
-              <span>
-                {item.author.name} opened {relativeTime(item.createdAt)}
-              </span>
-            </div>
-            <h1 className="mt-0.5 text-[15px] leading-snug font-semibold">{item.title}</h1>
-
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <CheckPill checks={item.checks} />
-              <Badge>
-                <GitBranch className="size-3" />
-                <span className="mono !text-[10.5px]">
-                  {item.sourceBranch} → {item.targetBranch}
+    <MarkdownLinks value={autolink}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <header className="glass-quiet shrink-0 border-b border-border px-5 pt-3 pb-0">
+          <div className="flex items-start gap-3">
+            <Avatar src={item.author.avatarUrl} name={item.author.name} className="mt-0.5 size-7" />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+                <ProviderIcon kind={item.provider} className="size-3 opacity-70" />
+                <span className="truncate font-medium">{item.repo}</span>
+                <span className="opacity-60">#{item.number}</span>
+                <span className="opacity-50">·</span>
+                <span>
+                  {item.author.name} opened {relativeTime(item.createdAt)}
                 </span>
-              </Badge>
-              {item.draft && <Badge tone="info">Draft</Badge>}
-              {item.labels.slice(0, 4).map((label) => (
-                <Badge key={label}>{label}</Badge>
-              ))}
-            </div>
-          </div>
+              </div>
+              <h1 className="mt-0.5 text-[15px] leading-snug font-semibold">{item.title}</h1>
 
-          <div className="flex shrink-0 items-center gap-1">
-            <Tooltip label="Copy a prompt for your terminal" side="bottom">
-              <Button variant="ghost" size="sm" onClick={copyAgentPrompt}>
-                <ClipboardCopy className="size-3.5" />
-                Copy Claude prompt
-              </Button>
-            </Tooltip>
-            <Button variant="ghost" size="sm" onClick={() => openExternal(item.url)}>
-              <ExternalLink className="size-3.5" />
-              Open
-            </Button>
-          </div>
-        </div>
-
-        <nav className="mt-3 flex items-center gap-1" role="tablist">
-          <TabButton active={tab === 'diff'} onClick={() => setTab('diff')}>
-            <FileDiff className="size-3.5" />
-            Files
-            {detail && <Count>{detail.files.length}</Count>}
-          </TabButton>
-          <TabButton active={tab === 'checks'} onClick={() => setTab('checks')}>
-            <Check className="size-3.5" />
-            Checks
-            {item.checks.total > 0 && <Count>{item.checks.total}</Count>}
-          </TabButton>
-          <TabButton active={tab === 'conversation'} onClick={() => setTab('conversation')}>
-            <MessageSquare className="size-3.5" />
-            Conversation
-            {conversation.length > 0 && <Count>{conversation.length}</Count>}
-          </TabButton>
-
-          {tab === 'diff' && (
-            <div className="mb-1 ml-auto flex items-center gap-0.5">
-              <Tooltip label="Side by side" side="bottom">
-                <Button
-                  variant={settings.diffView === 'split' ? 'subtle' : 'ghost'}
-                  size="icon"
-                  aria-label="Side by side"
-                  onClick={() => void updateSettings({ diffView: 'split' })}
-                >
-                  <Columns2 className="size-4" />
-                </Button>
-              </Tooltip>
-              <Tooltip label="Unified" side="bottom">
-                <Button
-                  variant={settings.diffView === 'unified' ? 'subtle' : 'ghost'}
-                  size="icon"
-                  aria-label="Unified"
-                  onClick={() => void updateSettings({ diffView: 'unified' })}
-                >
-                  <Rows3 className="size-4" />
-                </Button>
-              </Tooltip>
-            </div>
-          )}
-        </nav>
-      </header>
-
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading && (
-          <div className="flex h-full items-center justify-center gap-2 text-muted-foreground">
-            <Loader2 className="spin size-4" />
-            <span className="text-[13px]">Loading the diff…</span>
-          </div>
-        )}
-
-        {error && !loading && (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-            <p className="max-w-md text-[13px] text-bad">{error}</p>
-            <Button size="sm" onClick={() => openExternal(item.url)}>
-              Open in browser instead
-            </Button>
-          </div>
-        )}
-
-        {detail && !loading && !error && (
-          <>
-            {tab === 'diff' && (
-              <DiffView
-                files={detail.files}
-                threads={detail.threads}
-                mode={settings.diffView}
-                onComment={addLineComment}
-                onReply={replyToThread}
-                onResolve={resolveThread}
-              />
-            )}
-            {tab === 'checks' && <ChecksPanel checks={item.checks} onOpen={openExternal} />}
-            {tab === 'conversation' && (
-              <div className="flex flex-col gap-3 p-4">
-                {detail.description.trim() && (
-                  <article className="glass rounded-lg p-3.5">
-                    <p className="mb-1.5 text-[11.5px] font-semibold text-muted-foreground">
-                      {item.author.name} wrote
-                    </p>
-                    <Markdown>{detail.description}</Markdown>
-                  </article>
-                )}
-
-                {conversation.map((thread) => (
-                  <ThreadCard
-                    key={thread.id}
-                    thread={thread}
-                    onReply={replyToThread}
-                    onResolve={resolveThread}
-                  />
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <CheckPill checks={item.checks} />
+                <Badge>
+                  <GitBranch className="size-3" />
+                  <span className="mono !text-[10.5px]">
+                    {item.sourceBranch} → {item.targetBranch}
+                  </span>
+                </Badge>
+                {item.draft && <Badge tone="info">Draft</Badge>}
+                {item.labels.slice(0, 4).map((label) => (
+                  <Badge key={label}>{label}</Badge>
                 ))}
+              </div>
+            </div>
 
-                {!conversation.length && !detail.description.trim() && (
-                  <p className="py-10 text-center text-[13px] text-muted-foreground">
-                    No conversation yet.
-                  </p>
-                )}
+            <div className="flex shrink-0 items-center gap-1">
+              <Tooltip label="Copy a prompt for your terminal" side="bottom">
+                <Button variant="ghost" size="sm" onClick={copyAgentPrompt}>
+                  <ClipboardCopy className="size-3.5" />
+                  Copy Claude prompt
+                </Button>
+              </Tooltip>
+              <Button variant="ghost" size="sm" onClick={() => openExternal(item.url)}>
+                <ExternalLink className="size-3.5" />
+                Open
+              </Button>
+            </div>
+          </div>
 
-                {inlineCount > 0 && (
-                  <p className="text-center text-[11.5px] text-muted-foreground">
-                    {inlineCount} inline thread{inlineCount === 1 ? '' : 's'} shown on the Files tab.
-                  </p>
-                )}
+          <nav className="mt-3 flex items-center gap-1" role="tablist">
+            <TabButton active={tab === 'diff'} onClick={() => setTab('diff')}>
+              <FileDiff className="size-3.5" />
+              Files
+              {detail && <Count>{detail.files.length}</Count>}
+            </TabButton>
+            <TabButton active={tab === 'checks'} onClick={() => setTab('checks')}>
+              <Check className="size-3.5" />
+              Checks
+              {item.checks.total > 0 && <Count>{item.checks.total}</Count>}
+            </TabButton>
+            <TabButton active={tab === 'conversation'} onClick={() => setTab('conversation')}>
+              <MessageSquare className="size-3.5" />
+              Conversation
+              {conversation.length > 0 && <Count>{conversation.length}</Count>}
+            </TabButton>
+
+            {tab === 'diff' && (
+              <div className="mb-1 ml-auto flex items-center gap-0.5">
+                <Tooltip label="Side by side" side="bottom">
+                  <Button
+                    variant={settings.diffView === 'split' ? 'subtle' : 'ghost'}
+                    size="icon"
+                    aria-label="Side by side"
+                    onClick={() => void updateSettings({ diffView: 'split' })}
+                  >
+                    <Columns2 className="size-4" />
+                  </Button>
+                </Tooltip>
+                <Tooltip label="Unified" side="bottom">
+                  <Button
+                    variant={settings.diffView === 'unified' ? 'subtle' : 'ghost'}
+                    size="icon"
+                    aria-label="Unified"
+                    onClick={() => void updateSettings({ diffView: 'unified' })}
+                  >
+                    <Rows3 className="size-4" />
+                  </Button>
+                </Tooltip>
               </div>
             )}
-          </>
-        )}
-      </div>
+          </nav>
+        </header>
 
-      <footer className="glass-quiet shrink-0 border-t border-border p-3">
-        <Textarea
-          rows={verdict || body ? 3 : 1}
-          value={body}
-          placeholder={
-            verdict === 'approve'
-              ? 'Optional note with your approval…'
-              : verdict === 'request_changes'
-                ? 'What needs to change?'
-                : 'Leave a comment on this pull request…'
-          }
-          onChange={(event) => setBody(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && canSubmit) void submit()
-          }}
-        />
-        <div className="mt-2 flex items-center gap-1.5">
-          <VerdictButton
-            active={verdict === 'approve'}
-            variant="success"
-            onClick={() => setVerdict(verdict === 'approve' ? null : 'approve')}
-          >
-            <Check className="size-3.5" />
-            Approve
-          </VerdictButton>
-          <VerdictButton
-            active={verdict === 'request_changes'}
-            variant="danger"
-            onClick={() => setVerdict(verdict === 'request_changes' ? null : 'request_changes')}
-          >
-            <X className="size-3.5" />
-            Request changes
-          </VerdictButton>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {loading && (
+            <div className="flex h-full items-center justify-center gap-2 text-muted-foreground">
+              <Loader2 className="spin size-4" />
+              <span className="text-[13px]">Loading the diff…</span>
+            </div>
+          )}
 
-          <span className="ml-auto text-[10.5px] text-muted-foreground">⌘↵</span>
-          <Button
-            variant="default"
-            size="sm"
-            disabled={!canSubmit}
-            onClick={() => void submit()}
-          >
-            {submitting ? <Loader2 className="spin size-3.5" /> : <Send className="size-3.5" />}
-            {verdict === 'approve'
-              ? 'Approve'
-              : verdict === 'request_changes'
-                ? 'Request changes'
-                : 'Comment'}
-          </Button>
+          {error && !loading && (
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
+              <p className="max-w-md text-[13px] text-bad">{error}</p>
+              <Button size="sm" onClick={() => openExternal(item.url)}>
+                Open in browser instead
+              </Button>
+            </div>
+          )}
+
+          {detail && !loading && !error && (
+            <>
+              {tab === 'diff' && (
+                <DiffView
+                  files={detail.files}
+                  threads={detail.threads}
+                  mode={settings.diffView}
+                  onComment={addLineComment}
+                  onReply={replyToThread}
+                  onResolve={resolveThread}
+                />
+              )}
+              {tab === 'checks' && <ChecksPanel checks={item.checks} onOpen={openExternal} />}
+              {tab === 'conversation' && (
+                <div className="flex flex-col gap-3 p-4">
+                  {detail.description.trim() && (
+                    <article className="glass rounded-lg p-3.5">
+                      <p className="mb-1.5 text-[11.5px] font-semibold text-muted-foreground">
+                        {item.author.name} wrote
+                      </p>
+                      <Markdown>{detail.description}</Markdown>
+                    </article>
+                  )}
+
+                  {conversation.map((thread) => (
+                    <ThreadCard
+                      key={thread.id}
+                      thread={thread}
+                      onReply={replyToThread}
+                      onResolve={resolveThread}
+                    />
+                  ))}
+
+                  {!conversation.length && !detail.description.trim() && (
+                    <p className="py-10 text-center text-[13px] text-muted-foreground">
+                      No conversation yet.
+                    </p>
+                  )}
+
+                  {inlineCount > 0 && (
+                    <p className="text-center text-[11.5px] text-muted-foreground">
+                      {inlineCount} inline thread{inlineCount === 1 ? '' : 's'} shown on the Files tab.
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </div>
-      </footer>
-    </div>
+
+        <footer className="glass-quiet shrink-0 border-t border-border p-3">
+          <Textarea
+            rows={verdict || body ? 3 : 1}
+            value={body}
+            placeholder={
+              verdict === 'approve'
+                ? 'Optional note with your approval…'
+                : verdict === 'request_changes'
+                  ? 'What needs to change?'
+                  : 'Leave a comment on this pull request…'
+            }
+            onChange={(event) => setBody(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && canSubmit) void submit()
+            }}
+          />
+          <div className="mt-2 flex items-center gap-1.5">
+            <VerdictButton
+              active={verdict === 'approve'}
+              variant="success"
+              onClick={() => setVerdict(verdict === 'approve' ? null : 'approve')}
+            >
+              <Check className="size-3.5" />
+              Approve
+            </VerdictButton>
+            <VerdictButton
+              active={verdict === 'request_changes'}
+              variant="danger"
+              onClick={() => setVerdict(verdict === 'request_changes' ? null : 'request_changes')}
+            >
+              <X className="size-3.5" />
+              Request changes
+            </VerdictButton>
+
+            <span className="ml-auto text-[10.5px] text-muted-foreground">⌘↵</span>
+            <Button
+              variant="default"
+              size="sm"
+              disabled={!canSubmit}
+              onClick={() => void submit()}
+            >
+              {submitting ? <Loader2 className="spin size-3.5" /> : <Send className="size-3.5" />}
+              {verdict === 'approve'
+                ? 'Approve'
+                : verdict === 'request_changes'
+                  ? 'Request changes'
+                  : 'Comment'}
+            </Button>
+          </div>
+        </footer>
+      </div>
+    </MarkdownLinks>
   )
 }
 
