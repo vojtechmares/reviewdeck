@@ -159,8 +159,10 @@ jobs:
 
           REPO_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
           DOWNLOAD="$REPO_URL/releases/download/$TAG"
-          # vojtechmares/homebrew-tap is vojtechmares/tap to brew.
-          TAP="${TAP_REPO/\/homebrew-/\/}"
+          # vojtechmares/homebrew-tap is vojtechmares/tap to brew. Strip and
+          # rejoin rather than substitute: macOS runners use bash 3.2, which
+          # keeps the backslash of an escaped "/" in a replacement string.
+          TAP="${TAP_REPO%%/*}/${TAP_REPO##*/homebrew-}"
 
           cat >> release/notes.md <<EOF
 
