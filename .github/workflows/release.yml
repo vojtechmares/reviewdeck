@@ -112,33 +112,15 @@ jobs:
       - name: Typecheck and build
         run: pnpm build
 
-      # A release is the one build that may not fall back to ad-hoc: an ad-hoc
-      # signature changes with every rebuild, and the Keychain then treats each
-      # upgrade as a different application and asks for the password again.
-      - name: Import the signing certificate
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${CSC_LINK:-}" ]]; then
-            echo "::error::CSC_LINK is not set - a release cannot ship ad-hoc signed"
-            exit 1
-          fi
-          ./scripts/import-signing-cert.sh
-
       # --publish never: a tag makes electron-builder try to create the
       # GitHub release itself, and the "Publish the release" step below is
       # what does that. Explicit either way from electron-builder v27 on.
       - name: Package the app
-        run: |
-          pnpm exec electron-builder --mac --publish never --config electron-builder.yml \
-            -c.mac.identity="$(./scripts/signing-identity.sh)"
+        run: pnpm exec electron-builder --mac --publish never --config electron-builder.yml
 
       - name: Verify the bundle
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          REQUIRE_SIGNED_IDENTITY: "1"
         run: ./scripts/verify-app.sh release/mac-arm64/Reviewdeck.app
 
       - name: Checksum the artifacts
@@ -215,8 +197,8 @@ jobs:
 
           [Reviewdeck-$VERSION-arm64.dmg]($DOWNLOAD/Reviewdeck-$VERSION-arm64.dmg) -
           open it and drag \`Reviewdeck.app\` into Applications. The bundle is
-          signed with a self-signed certificate and is not notarised, so the
-          first launch needs right-click → Open, or clear the flag yourself:
+          ad-hoc signed but not notarised, so the first launch needs
+          right-click → Open, or clear the flag yourself:
 
           \`\`\`sh
           xattr -dr com.apple.quarantine /Applications/Reviewdeck.app
@@ -253,13 +235,6 @@ jobs:
             "release/Reviewdeck-$VERSION-arm64.dmg" \
             "release/Reviewdeck-$VERSION-arm64.zip" \
             release/checksums.txt
-
-      # Bounded: cleanup is tidying, and macOS has more than one way to sit
-      # waiting for an authorisation dialog that will never be answered.
-      - name: Remove the signing certificate
-        if: always()
-        timeout-minutes: 2
-        run: ./scripts/import-signing-cert.sh --remove
 
   # The tap lives in another repository, so github.token cannot reach it -
   # HOMEBREW_TAP_TOKEN is a PAT with contents:write on the tap.

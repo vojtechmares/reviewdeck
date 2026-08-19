@@ -22,9 +22,9 @@ jobs:
     timeout-minutes: 20
     env:
       # electron-builder refuses to sign on pull requests unless this is set,
-      # and an unsigned arm64 bundle will not launch at all. A pull request
-      # from a fork cannot reach the certificate and signs ad-hoc regardless;
-      # the flag is what lets a branch in this repository sign for real.
+      # and an unsigned arm64 bundle will not launch at all. The signature is
+      # ad-hoc, so there is no certificate and no secret for a fork to reach -
+      # the warning the flag silences does not apply here.
       CSC_FOR_PULL_REQUEST: "true"
 
     steps:
@@ -57,27 +57,12 @@ jobs:
       - name: Typecheck and build
         run: pnpm build
 
-      # A branch in this repository signs with the release certificate, so the
-      # path a tag depends on is exercised before the tag exists. A fork reads
-      # empty secrets, imports nothing, and falls back to ad-hoc.
-      - name: Import the signing certificate
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: ./scripts/import-signing-cert.sh
-
       # --dir only, so every push exercises packaging and signing without
       # paying for the dmg. The release workflow builds the real artifacts.
       - name: Package the app
-        run: |
-          pnpm exec electron-builder --mac --dir --config electron-builder.yml \
-            -c.mac.identity="$(./scripts/signing-identity.sh)"
+        run: pnpm exec electron-builder --mac --dir --config electron-builder.yml
 
-      # Ad-hoc is the expected outcome on a fork and a failure anywhere else,
-      # so the assertion follows whether the secret was readable.
       - name: Verify the bundle
-        env:
-          REQUIRE_SIGNED_IDENTITY: ${{ secrets.CSC_LINK != '' && '1' || '' }}
         run: ./scripts/verify-app.sh release/mac-arm64/Reviewdeck.app
 
       - name: Zip the app
@@ -92,10 +77,3 @@ jobs:
           name: Reviewdeck-${{ github.sha }}
           path: release/*.zip
           if-no-files-found: error
-
-      # Bounded: cleanup is tidying, and macOS has more than one way to sit
-      # waiting for an authorisation dialog that will never be answered.
-      - name: Remove the signing certificate
-        if: always()
-        timeout-minutes: 2
-        run: ./scripts/import-signing-cert.sh --remove
