@@ -9,11 +9,13 @@ import type { DraftSet, DraftState } from './drafts.ts'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { emptyDeckCache, readDeckCache, type DeckCache } from '@shared/deck-cache.ts'
 import {
   DEFAULT_SETTINGS,
   mergeSettings,
   type Account,
   type DraftComment,
+  type ReviewItem,
   type Settings,
 } from '@shared/types.ts'
 
@@ -29,6 +31,8 @@ interface Vault {
   drafts: DraftComment[]
   /** What is known about each item's draft set beyond the text: baseline, divergence. */
   draftSets: Record<string, DraftSet>
+  /** The last synced deck, so a launch has reviews to show before the fan-out. */
+  deck: DeckCache
 }
 
 const EMPTY: Vault = {
@@ -39,6 +43,7 @@ const EMPTY: Vault = {
   seen: [],
   drafts: [],
   draftSets: {},
+  deck: emptyDeckCache(),
 }
 
 let cache: Vault | null = null
@@ -66,6 +71,7 @@ function load(): Vault {
       seen: parsed.seen ?? [],
       drafts: parsed.drafts ?? [],
       draftSets: parsed.draftSets ?? {},
+      deck: readDeckCache(parsed.deck),
     }
   } catch (error) {
     // A corrupt file should not brick the app; keep the bad copy for forensics.
@@ -116,6 +122,12 @@ export function removeAccount(id: string): void {
   const vault = load()
   vault.accounts = vault.accounts.filter((account) => account.id !== id)
   delete vault.tokens[id]
+  // A signed-out host does not get to leave its reviews on disk. Replaced rather
+  // than mutated, because a fresh vault shares its empty cache with the default.
+  vault.deck = {
+    ...vault.deck,
+    items: Object.fromEntries(Object.entries(vault.deck.items).filter(([key]) => key !== id)),
+  }
   persist()
 }
 
@@ -143,6 +155,27 @@ export function persistDraftState(state: DraftState): void {
   const vault = load()
   vault.drafts = state.comments
   vault.draftSets = state.sets
+  persist()
+}
+
+/**
+ * The cached deck, minus anything belonging to an account that is no longer here -
+ * a vault edited by hand, or an account dropped by a build that did not prune.
+ */
+export function loadDeckCache(): Record<string, ReviewItem[]> {
+  const vault = load()
+  const connected = new Set(vault.accounts.map((account) => account.id))
+  const items: Record<string, ReviewItem[]> = {}
+  for (const [accountId, cached] of Object.entries(vault.deck.items)) {
+    if (connected.has(accountId)) items[accountId] = cached
+  }
+  return items
+}
+
+/** Replaces the cached deck wholesale, so a sync's removals are removals here too. */
+export function persistDeckCache(items: Record<string, ReviewItem[]>): void {
+  const vault = load()
+  vault.deck = { ...emptyDeckCache(), items }
   persist()
 }
 

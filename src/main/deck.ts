@@ -10,7 +10,14 @@ import { drafts } from './draft-store.ts'
 import { providerFor } from './providers/index.ts'
 import { limitConcurrency } from './providers/types.ts'
 import { DEMO_ACCOUNTS, DEMO_ITEMS, demoEnabled } from './demo.ts'
-import { getSettings, getToken, listAccounts, markSeen } from './store.ts'
+import {
+  getSettings,
+  getToken,
+  listAccounts,
+  loadDeckCache,
+  markSeen,
+  persistDeckCache,
+} from './store.ts'
 import type { Account, AccountStatus, DeckState, ReviewItem } from '@shared/types.ts'
 import type { Session } from './providers/types.ts'
 
@@ -128,6 +135,7 @@ class Deck extends EventEmitter {
     // one added mid-flight was never asked, so the deck cannot claim to know it.
     this.syncedAccounts = signatureOf(accounts)
     this.lastSyncedAt = new Date().toISOString()
+    persistDeckCache(Object.fromEntries(this.byAccount))
     this.announceNew()
     this.publish()
     this.scheduleCheckPoll()
@@ -238,6 +246,22 @@ class Deck extends EventEmitter {
       notification.on('click', focusWindow)
       notification.show()
     }
+  }
+
+  /**
+   * Fills the deck from the vault before the first fan-out, so the window and the
+   * menu bar open on the reviews the last sync found instead of on nothing.
+   *
+   * Deliberately does not count as a sync: these reviews are as old as the quit
+   * that wrote them, so the deck still has nothing to say about whether the
+   * accounts are quiet until it has actually asked them.
+   */
+  hydrate(): void {
+    if (demoEnabled()) return
+    for (const [accountId, items] of Object.entries(loadDeckCache())) {
+      this.byAccount.set(accountId, items)
+    }
+    this.publish()
   }
 
   start(): void {

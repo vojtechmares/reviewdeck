@@ -186,6 +186,9 @@ if (!app.requestSingleInstanceLock()) {
     serveImages()
     registerIpc()
     buildMenu()
+    // Before the window and the tray, so both open on the deck the last sync left
+    // behind rather than on nothing until the fan-out comes back.
+    deck.hydrate()
     mainWindow = createWindow()
     createTray()
     deck.start()
