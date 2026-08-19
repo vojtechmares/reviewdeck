@@ -254,8 +254,11 @@ jobs:
             "release/Reviewdeck-$VERSION-arm64.zip" \
             release/checksums.txt
 
+      # Bounded: cleanup is tidying, and macOS has more than one way to sit
+      # waiting for an authorisation dialog that will never be answered.
       - name: Remove the signing certificate
         if: always()
+        timeout-minutes: 2
         run: ./scripts/import-signing-cert.sh --remove
 
   # The tap lives in another repository, so github.token cannot reach it -

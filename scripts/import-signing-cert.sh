@@ -42,15 +42,57 @@ if [[ "${1:-}" == "--remove" ]]; then
 	# The keychain is the marker for "this script ran here". Without it there is
 	# nothing of ours to undo, and a developer machine that trusted the
 	# certificate by hand keeps its own trust setting.
-	if [[ -f "$KEYCHAIN" ]]; then
-		# -n rather than a password prompt: cleanup must never block a job, and
-		# never let a failure here fail a build that already has its artifacts.
-		sudo -n security remove-trusted-cert -d "$CERT" >/dev/null 2>&1 || true
-		security delete-keychain "$KEYCHAIN" 2>/dev/null || true
-		echo "==> signing certificate removed"
-	else
+	if [[ ! -f "$KEYCHAIN" ]]; then
 		echo "==> no signing keychain to remove"
+		exit 0
 	fi
+
+	# The private key goes first. Everything after this point is tidying, and
+	# none of it may fail a build that already has its artifacts.
+	security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+	echo "==> signing keychain deleted"
+
+	# Removing a trust setting asks for an authorisation that only an
+	# interactive session can grant - unlike add-trusted-cert, which takes a
+	# keychain and goes through under sudo - so on a runner it sits waiting for
+	# a dialog nobody will ever click. Give it a moment and move on: what is
+	# left behind is public material that signs nothing without the private key
+	# deleted above, and the runner itself is thrown away minutes later.
+	MARKER="${RUNNER_TEMP:-/tmp}/reviewdeck-trust-removed"
+	rm -f "$MARKER"
+	{
+		if sudo -n security remove-trusted-cert -d "$CERT" >/dev/null 2>&1; then
+			echo removed > "$MARKER"
+		else
+			echo refused > "$MARKER"
+		fi
+	} &
+	REMOVER=$!
+	# Off the job table, so killing it below does not print a "Killed: 9" notice
+	# across the build log.
+	disown "$REMOVER" 2>/dev/null || true
+	for _ in 1 2 3 4 5; do
+		[[ -f "$MARKER" ]] && break
+		sleep 1
+	done
+
+	case "$(cat "$MARKER" 2>/dev/null)" in
+	removed)
+		echo "==> trust setting removed"
+		;;
+	refused)
+		# No passwordless sudo, or nothing of ours in the admin trust domain -
+		# a developer machine that trusted the certificate by hand lands here,
+		# and its own trust setting is none of this script's business.
+		echo "==> no admin trust setting of ours to remove"
+		;;
+	*)
+		kill -9 "$REMOVER" 2>/dev/null || true
+		pkill -9 -f "security remove-trusted-cert" 2>/dev/null || true
+		echo "==> trust setting left in place - removing it wanted an interactive authorisation"
+		;;
+	esac
+	rm -f "$MARKER"
 	exit 0
 fi
 
