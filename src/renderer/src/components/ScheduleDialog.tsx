@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { type ReviewWindow } from '@shared/types'
-import { dayName, describeWindow, windowProblem } from '@shared/review-window'
+import { coversNothing, dayName, describeWindow, windowProblem } from '@shared/review-window'
 import { useApp } from '@/hooks/useApp'
 import { Button } from './ui/button'
 import { Dialog } from './ui/dialog'
@@ -20,6 +20,8 @@ function blankWindow(): ReviewWindow {
     start: '09:00',
     end: '09:30',
     minimum: 1,
+    // Empty is every account, now and in future.
+    accounts: [],
   }
 }
 
@@ -30,10 +32,11 @@ export function ScheduleDialog({
   open: boolean
   onClose: () => void
 }): React.JSX.Element {
-  const { settings, updateSettings } = useApp()
+  const { accounts, settings, updateSettings } = useApp()
   const [editing, setEditing] = useState<ReviewWindow | null>(null)
 
   const windows = settings.reviewWindows
+  const accountIds = accounts.map((account) => account.id)
   const problem = editing ? windowProblem(editing) : null
 
   const save = (): void => {
@@ -51,6 +54,15 @@ export function ScheduleDialog({
 
   const patch = (values: Partial<ReviewWindow>): void => {
     setEditing((current) => (current ? { ...current, ...values } : current))
+  }
+
+  const toggleAccount = (accountId: string): void => {
+    if (!editing) return
+    patch({
+      accounts: editing.accounts.includes(accountId)
+        ? editing.accounts.filter((entry) => entry !== accountId)
+        : [...editing.accounts, accountId],
+    })
   }
 
   const toggleDay = (day: number): void => {
@@ -91,32 +103,40 @@ export function ScheduleDialog({
       {!editing ? (
         <div className="flex flex-col gap-2">
           <ul className="flex flex-col gap-2">
-            {windows.map((window) => (
-              <li key={window.id} className="glass flex items-center gap-3 rounded-lg px-3 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-medium">{describeWindow(window)}</p>
-                  {!window.enabled && (
-                    <p className="text-[11.5px] text-muted-foreground">Turned off</p>
-                  )}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={`Edit ${describeWindow(window)}`}
-                  onClick={() => setEditing(window)}
-                >
-                  <Pencil className="size-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={`Remove ${describeWindow(window)}`}
-                  onClick={() => remove(window.id)}
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </li>
-            ))}
+            {windows.map((window) => {
+              const summary = describeWindow(window, accounts)
+              return (
+                <li key={window.id} className="glass flex items-center gap-3 rounded-lg px-3 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-medium">{summary}</p>
+                    {!window.enabled && (
+                      <p className="text-[11.5px] text-muted-foreground">Turned off</p>
+                    )}
+                    {coversNothing(window, accountIds) && (
+                      <p className="text-[11.5px] text-bad">
+                        Every account it named has been signed out, so it can never fire.
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Edit ${summary}`}
+                    onClick={() => setEditing(window)}
+                  >
+                    <Pencil className="size-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Remove ${summary}`}
+                    onClick={() => remove(window.id)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </li>
+              )
+            })}
           </ul>
 
           {!windows.length && (
@@ -187,6 +207,40 @@ export function ScheduleDialog({
               Checked for as long as the window is open, not just as it opens - so a
               window that starts quiet still fires the moment the count is reached.
             </p>
+          </div>
+
+          <div>
+            <Label>Accounts</Label>
+            <div className="flex flex-col gap-1.5">
+              <label className="flex cursor-pointer items-center gap-2 text-[12.5px]">
+                <input
+                  type="checkbox"
+                  checked={!editing.accounts.length}
+                  // Ticking it clears the selection, because empty is what "every
+                  // account" means - including the ones connected after today.
+                  onChange={() => patch({ accounts: [] })}
+                />
+                All accounts
+              </label>
+              {accounts.map((account) => (
+                <label
+                  key={account.id}
+                  className="flex cursor-pointer items-center gap-2 pl-4 text-[12.5px]"
+                >
+                  <input
+                    type="checkbox"
+                    checked={editing.accounts.includes(account.id)}
+                    onChange={() => toggleAccount(account.id)}
+                  />
+                  {account.label}
+                </label>
+              ))}
+            </div>
+            {!accounts.length && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                No accounts connected yet, so this window covers whatever you add.
+              </p>
+            )}
           </div>
 
           <label className="flex cursor-pointer items-center gap-2 text-[12.5px]">

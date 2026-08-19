@@ -8,6 +8,12 @@
  * all - which is what an empty list means, so this costs nothing to anyone who
  * never opens the schedule.
  *
+ * A window may also name the accounts it covers, and that one field turns "is the
+ * app quiet" into a question about each review rather than about the app. A review
+ * no enabled window covers pings live exactly as it did before any of this existed,
+ * which is the safest way for this to fail: there is no way to configure yourself
+ * into permanent silence, and windows only ever silence what they claim.
+ *
  * Every decision here reads the current local wall clock rather than a fire time
  * worked out in advance. That is what makes the end time carry its weight: a lid
  * that opens at 09:12 is still inside a 09:00-09:30 span and fires then, one that
@@ -16,6 +22,11 @@
  */
 
 import type { ReviewWindow } from './types.ts'
+
+/** All this module needs of a review: the account it came in on. */
+interface Scoped {
+  accountId: string
+}
 
 /** Twice a minute, because a three-minute sync would let a 09:00 span open at 09:02. */
 export const WINDOW_TICK_MS = 30_000
@@ -53,6 +64,24 @@ function spanOf(window: ReviewWindow): { start: number; end: number } | null {
 }
 
 /**
+ * Whether this window claims an account.
+ *
+ * Naming none claims them all, which is also what a window left scoped to accounts
+ * that have since been signed out reduces to: it names some, matches none of the
+ * ones still here, and so covers nothing and can never fire. That is shown rather
+ * than tidied away, because silently widening it back to everything would start
+ * interrupting about accounts nobody asked it to watch.
+ */
+export function windowCovers(window: ReviewWindow, accountId: string): boolean {
+  return !window.accounts.length || window.accounts.includes(accountId)
+}
+
+/** The reviews a window is responsible for, which is what it counts and summarises. */
+export function reviewsInScope<T extends Scoped>(window: ReviewWindow, reviews: T[]): T[] {
+  return reviews.filter((review) => windowCovers(window, review.accountId))
+}
+
+/**
  * Whether the clock is inside this window's span right now: on a day it covers,
  * at or after the start, and before the end.
  *
@@ -86,33 +115,44 @@ export function windowShouldFire(
   return waiting >= window.minimum
 }
 
-/** Every window due on this tick. Two of them means one notification, not two. */
+/**
+ * Every window due on this tick. Two of them means one notification, not two.
+ *
+ * Each is asked about its own scope rather than about the whole deck, so a window
+ * watching one account with a minimum of two waits for two reviews on that account
+ * and is not tripped by a busy afternoon somewhere else.
+ */
 export function windowsToFire(
   windows: ReviewWindow[],
   now: Date,
   firedOn: Record<string, string>,
-  waiting: number,
+  waiting: Scoped[],
 ): ReviewWindow[] {
-  return windows.filter((window) => windowShouldFire(window, now, firedOn[window.id], waiting))
+  return windows.filter((window) =>
+    windowShouldFire(window, now, firedOn[window.id], reviewsInScope(window, waiting).length),
+  )
 }
 
 /**
- * Whether the app may ping about an individual arrival right now.
+ * Whether the app may ping about an arrival on this account right now.
  *
- * With no schedule the answer is always yes, which is what keeps an empty list
- * identical to how the app has always behaved. With one, liveness begins when the
- * roll-up does rather than when the clock enters the span, so arrivals ahead of it
- * push the count the roll-up will state instead of pinging one at a time.
+ * An account no enabled window covers is always yes, which is what keeps both an
+ * empty schedule and an unscheduled account identical to how the app has always
+ * behaved. Where a window does cover it, liveness begins when that window's roll-up
+ * does rather than when the clock enters the span, so arrivals ahead of it push the
+ * count the roll-up will state instead of pinging one at a time - and it is the
+ * union across covering windows, because any one of them opening is enough.
  */
-export function announcingAllowed(
+export function announcingAllowedFor(
+  accountId: string,
   windows: ReviewWindow[],
   now: Date,
   firedOn: Record<string, string>,
 ): boolean {
-  const scheduled = windows.filter((window) => window.enabled)
-  if (!scheduled.length) return true
+  const covering = windows.filter((window) => window.enabled && windowCovers(window, accountId))
+  if (!covering.length) return true
   const today = localDay(now)
-  return scheduled.some((window) => isWithinWindow(window, now) && firedOn[window.id] === today)
+  return covering.some((window) => isWithinWindow(window, now) && firedOn[window.id] === today)
 }
 
 /**
@@ -161,12 +201,31 @@ export function nextWindowStart(windows: ReviewWindow[], now: Date): Date | null
  * whether or not the roll-up has landed in the last few seconds, and "quiet until"
  * is about the stretches between windows rather than the wait for the next tick.
  */
-export function quietUntil(windows: ReviewWindow[], now: Date): string | null {
+export function quietUntil(
+  windows: ReviewWindow[],
+  accountIds: string[],
+  waiting: Scoped[],
+  now: Date,
+): string | null {
   const scheduled = windows.filter((window) => window.enabled)
-  if (!scheduled.length) return null
-  if (scheduled.some((window) => isWithinWindow(window, now))) return null
 
-  const resumes = nextWindowStart(scheduled, now)
+  // An account is quiet when something covers it and nothing covering it is open.
+  const hushed = accountIds.filter((accountId) => {
+    const covering = scheduled.filter((window) => windowCovers(window, accountId))
+    return covering.length > 0 && !covering.some((window) => isWithinWindow(window, now))
+  })
+  if (!hushed.length) return null
+
+  // Something is waiting and none of it is being held: whatever is there pinged as
+  // it landed, so there is no silence to account for.
+  if (waiting.length && !waiting.some((review) => hushed.includes(review.accountId))) return null
+
+  // The soonest moment any hushed account comes back, and no more than that. A menu
+  // line enumerating accounts and their separate resume times helps nobody.
+  const resumes = nextWindowStart(
+    scheduled.filter((window) => hushed.some((accountId) => windowCovers(window, accountId))),
+    now,
+  )
   if (!resumes) return null
 
   const clock = `${pad(resumes.getHours())}:${pad(resumes.getMinutes())}`
@@ -231,11 +290,31 @@ export function describeDays(days: number[]): string {
     .join(', ')
 }
 
-/** One row of the schedule in plain language: "Mon-Fri · 09:00-09:30 · 1+ waiting". */
-export function describeWindow(window: ReviewWindow): string {
+/** Whether a window names accounts that are all gone, so it covers nothing at all. */
+export function coversNothing(window: ReviewWindow, accountIds: string[]): boolean {
+  return window.accounts.length > 0 && !accountIds.some((id) => window.accounts.includes(id))
+}
+
+/** The scope clause of a row: which accounts, or that there are none left. */
+export function describeScope(
+  window: ReviewWindow,
+  accounts: { id: string; label: string }[],
+): string {
+  if (!window.accounts.length) return 'All accounts'
+  const named = accounts.filter((account) => window.accounts.includes(account.id))
+  if (!named.length) return 'Covers no account'
+  return named.map((account) => account.label).join(', ')
+}
+
+/** One row in plain language: "Mon-Fri · 09:00-09:30 · 1+ waiting · Work GitHub". */
+export function describeWindow(
+  window: ReviewWindow,
+  accounts: { id: string; label: string }[],
+): string {
   return [
     describeDays(window.days),
     `${window.start}-${window.end}`,
     `${window.minimum}+ waiting`,
+    describeScope(window, accounts),
   ].join(' · ')
 }

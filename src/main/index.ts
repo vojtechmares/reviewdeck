@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { deck } from './deck.ts'
 import { registerImageScheme, serveImages } from './images.ts'
 import { flushDrafts, registerIpc } from './ipc.ts'
-import { getSettings } from './store.ts'
+import { getSettings, listAccounts } from './store.ts'
 import { visibleReviews } from '@shared/types.ts'
 import { quietUntil } from '@shared/review-window.ts'
 
@@ -106,7 +106,12 @@ function createTray(): void {
     // say the silence was asked for. With notifications off there is nothing to
     // promise: saying they resume at noon would be a lie when nothing fires then.
     const quiet = settings.notificationsEnabled
-      ? quietUntil(settings.reviewWindows, new Date())
+      ? quietUntil(
+          settings.reviewWindows,
+          listAccounts().map((account) => account.id),
+          waiting,
+          new Date(),
+        )
       : null
     // Empty rather than a space when the count is off, so the icon sits where it
     // would if nothing were ever drawn beside it. The context menu still counts.

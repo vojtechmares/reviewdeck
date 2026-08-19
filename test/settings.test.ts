@@ -62,6 +62,21 @@ test('mergeSettings loads a vault written before a setting was removed', () => {
   assert.equal(merged.hideApproved, DEFAULT_SETTINGS.hideApproved)
 })
 
+test('a review window stored before it could name accounts covers all of them', () => {
+  // Written by the build that shipped windows without scoping. Coming back with no
+  // `accounts` at all would throw the moment anything asked what it covers.
+  const older = {
+    reviewWindows: [
+      { id: 'morning', enabled: true, days: [1, 2, 3, 4, 5], start: '09:00', end: '09:30', minimum: 1 },
+    ],
+  } as Partial<Settings>
+
+  const merged = mergeSettings(older)
+
+  assert.deepEqual(merged.reviewWindows[0].accounts, [])
+  assert.equal(merged.reviewWindows[0].start, '09:00')
+})
+
 test('the settings type no longer carries the whitespace-display key', () => {
   assert.equal(Object.hasOwn(DEFAULT_SETTINGS, 'showWhitespace'), false)
 })

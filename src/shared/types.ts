@@ -207,8 +207,14 @@ export interface ReviewWindow {
   /** Local wall clock, `HH:MM`. The span is [start, end) and may not cross midnight. */
   start: string
   end: string
-  /** Stays quiet until at least this many reviews are waiting. */
+  /** Stays quiet until at least this many reviews are waiting in its own scope. */
   minimum: number
+  /**
+   * The accounts it covers. Empty means every account, now and in future - which
+   * is why an account connected next March is picked up by an existing
+   * all-accounts window rather than quietly going dark.
+   */
+  accounts: string[]
 }
 
 export interface Settings {
@@ -260,7 +266,16 @@ export const DEFAULT_SETTINGS: Settings = {
  * removed since is carried along harmlessly rather than throwing.
  */
 export function mergeSettings(stored: Partial<Settings> | null | undefined): Settings {
-  return { ...DEFAULT_SETTINGS, ...(stored ?? {}) }
+  const merged = { ...DEFAULT_SETTINGS, ...(stored ?? {}) }
+  return {
+    ...merged,
+    // A window written before one could name accounts covers all of them, which is
+    // exactly what an empty list means - so the migration is the default itself.
+    reviewWindows: (merged.reviewWindows ?? []).map((window) => ({
+      ...window,
+      accounts: window.accounts ?? [],
+    })),
+  }
 }
 
 /**

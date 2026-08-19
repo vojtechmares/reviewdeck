@@ -22,8 +22,9 @@ import {
 } from './store.ts'
 import { idsToRecord, reviewsToAnnounce, visibleReviews } from '@shared/types.ts'
 import {
-  announcingAllowed,
+  announcingAllowedFor,
   localDay,
+  windowCovers,
   windowsToFire,
   WINDOW_TICK_MS,
 } from '@shared/review-window.ts'
@@ -263,7 +264,7 @@ class Deck extends EventEmitter {
     // No schedule is the common case and has to cost nothing: this runs twice a
     // minute whether or not anybody has ever opened the dialog.
     if (!settings.reviewWindows.some((window) => window.enabled)) return []
-    const waiting = visibleReviews(this.items(), settings).length
+    const waiting = visibleReviews(this.items(), settings)
     return windowsToFire(settings.reviewWindows, now, loadWindowsFired(), waiting)
   }
 
@@ -275,7 +276,13 @@ class Deck extends EventEmitter {
    */
   private fireRollUp(due: ReviewWindow[]): void {
     const settings = getSettings()
-    const waiting = visibleReviews(this.items(), settings)
+    // The union of what these windows cover. Anything outside it belongs to a
+    // window that has not opened yet, and this roll-up has no business speaking
+    // for it - or marking it seen and leaving that one with nothing to say.
+    const covered = this.items().filter((item) =>
+      due.some((window) => windowCovers(window, item.accountId)),
+    )
+    const waiting = visibleReviews(covered, settings)
 
     recordWindowsFired(
       due.map((window) => window.id),
@@ -283,7 +290,7 @@ class Deck extends EventEmitter {
     )
     // Everything the roll-up just summarised, so the next poll inside the span does
     // not then ping individually about a review it already covered.
-    markSeen(idsToRecord(this.items()))
+    markSeen(idsToRecord(covered))
 
     // Already looking at the deck: the banner would be reading the screen back to
     // them. Recorded as fired all the same, so liveness starts here rather than the
@@ -310,20 +317,28 @@ class Deck extends EventEmitter {
     const firstSync = !this.primed
     this.primed = true
 
-    // Outside every review window nothing is announced and, just as importantly,
-    // nothing is recorded as seen. This is the opposite of a review hidden by a
-    // standing preference: that one the user never wants, so it is recorded and
-    // forgotten, whereas this one they want later. Marking it here would leave the
-    // roll-up that opens the next window with nothing left to say.
-    if (!announcingAllowed(settings.reviewWindows, new Date(), loadWindowsFired())) return
+    // Asked per review rather than of the app, because a window only silences the
+    // accounts it covers: work can be waiting for 09:00 while a personal host still
+    // pings the moment something lands.
+    //
+    // Whatever is quiet is also left unrecorded, and that is the point. It is the
+    // opposite of a review hidden by a standing preference - that one the user never
+    // wants, so it is recorded and forgotten, whereas this one they want later, and
+    // marking it now would leave the roll-up that opens its window nothing to say.
+    const now = new Date()
+    const fired = loadWindowsFired()
+    const live = this.items().filter((item) =>
+      announcingAllowedFor(item.accountId, settings.reviewWindows, now, fired),
+    )
+    if (!live.length) return
 
-    const fresh = markSeen(idsToRecord(this.items()))
+    const fresh = markSeen(idsToRecord(live))
 
     if (firstSync) return
     if (!settings.notificationsEnabled || !fresh.length) return
     if (!Notification.isSupported()) return
 
-    const items = reviewsToAnnounce(this.items(), fresh, settings)
+    const items = reviewsToAnnounce(live, fresh, settings)
     if (items.length === 1) {
       const [item] = items
       const notification = new Notification({

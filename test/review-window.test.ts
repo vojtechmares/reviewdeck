@@ -1,14 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  announcingAllowed,
+  announcingAllowedFor,
+  coversNothing,
   describeDays,
+  describeScope,
   describeWindow,
   isWithinWindow,
   localDay,
   minutesOfDay,
   nextWindowStart,
   quietUntil,
+  reviewsInScope,
+  windowCovers,
   windowProblem,
   windowShouldFire,
   windowsToFire,
@@ -25,9 +29,17 @@ function reviewWindow(patch: Partial<ReviewWindow> = {}): ReviewWindow {
     start: '09:00',
     end: '09:30',
     minimum: 1,
+    accounts: [],
     ...patch,
   }
 }
+
+/** Windows count and cover reviews; all any of that needs is the account. */
+const on = (accountId: string): { accountId: string } => ({ accountId })
+
+const WORK = 'work-github'
+const PERSONAL = 'personal-forgejo'
+const BOTH = [WORK, PERSONAL]
 
 /** Local wall clock, which is the only clock any of this reads. */
 const at = (day: number, hour: number, minute: number): Date =>
@@ -110,7 +122,8 @@ test('two windows open on one tick come back together, for one notification', ()
     reviewWindow({ id: 'a', start: '09:00', end: '09:30' }),
     reviewWindow({ id: 'b', start: '09:15', end: '10:00' }),
   ]
-  const both = windowsToFire(windows, at(WEDNESDAY, 9, 20), {}, 3)
+  const waiting = [on(WORK), on(WORK), on(PERSONAL)]
+  const both = windowsToFire(windows, at(WEDNESDAY, 9, 20), {}, waiting)
   assert.deepEqual(
     both.map((window) => window.id),
     ['a', 'b'],
@@ -118,7 +131,12 @@ test('two windows open on one tick come back together, for one notification', ()
 
   // Minutes apart is a different matter: the second span is a genuinely new event,
   // so once the first has fired only the second is still due.
-  const later = windowsToFire(windows, at(WEDNESDAY, 9, 20), { a: localDay(at(WEDNESDAY, 9, 20)) }, 3)
+  const later = windowsToFire(
+    windows,
+    at(WEDNESDAY, 9, 20),
+    { a: localDay(at(WEDNESDAY, 9, 20)) },
+    waiting,
+  )
   assert.deepEqual(
     later.map((window) => window.id),
     ['b'],
@@ -126,9 +144,10 @@ test('two windows open on one tick come back together, for one notification', ()
 })
 
 test('with no schedule the app announces whenever it finds something', () => {
-  assert.equal(announcingAllowed([], at(WEDNESDAY, 3, 0), {}), true)
+  assert.equal(announcingAllowedFor(WORK, [], at(WEDNESDAY, 3, 0), {}), true)
   // A schedule of nothing but disabled windows is no schedule at all.
-  assert.equal(announcingAllowed([reviewWindow({ enabled: false })], at(WEDNESDAY, 3, 0), {}), true)
+  const off = [reviewWindow({ enabled: false })]
+  assert.equal(announcingAllowedFor(WORK, off, at(WEDNESDAY, 3, 0), {}), true)
 })
 
 test('liveness begins when the roll-up does, not when the clock enters the span', () => {
@@ -137,13 +156,16 @@ test('liveness begins when the roll-up does, not when the clock enters the span'
 
   // Inside the span but the roll-up has not gone out: still quiet, so arrivals push
   // the count rather than pinging one at a time.
-  assert.equal(announcingAllowed(windows, at(WEDNESDAY, 9, 5), {}), false)
+  assert.equal(announcingAllowedFor(WORK, windows, at(WEDNESDAY, 9, 5), {}), false)
   // Once it has fired, the rest of the span is live.
-  assert.equal(announcingAllowed(windows, at(WEDNESDAY, 9, 5), { morning: today }), true)
+  assert.equal(announcingAllowedFor(WORK, windows, at(WEDNESDAY, 9, 5), { morning: today }), true)
   // And the moment the span closes it is quiet again, fired or not.
-  assert.equal(announcingAllowed(windows, at(WEDNESDAY, 9, 30), { morning: today }), false)
+  assert.equal(announcingAllowedFor(WORK, windows, at(WEDNESDAY, 9, 30), { morning: today }), false)
   // Yesterday's firing does not make today live.
-  assert.equal(announcingAllowed(windows, at(WEDNESDAY, 9, 5), { morning: '2026-08-18' }), false)
+  assert.equal(
+    announcingAllowedFor(WORK, windows, at(WEDNESDAY, 9, 5), { morning: '2026-08-18' }),
+    false,
+  )
 })
 
 test('the next boundary is the next time a window opens, later the same day', () => {
@@ -182,13 +204,13 @@ test('a schedule that describes no span at all has no next boundary', () => {
 })
 
 test('the menu bar says nothing extra when there is no schedule to be quiet for', () => {
-  assert.equal(quietUntil([], at(WEDNESDAY, 3, 0)), null)
-  assert.equal(quietUntil([reviewWindow({ enabled: false })], at(WEDNESDAY, 3, 0)), null)
+  assert.equal(quietUntil([], BOTH, [], at(WEDNESDAY, 3, 0)), null)
+  assert.equal(quietUntil([reviewWindow({ enabled: false })], BOTH, [], at(WEDNESDAY, 3, 0)), null)
 })
 
 test('the menu bar says nothing extra while a window is open', () => {
-  assert.equal(quietUntil([reviewWindow()], at(WEDNESDAY, 9, 0)), null)
-  assert.equal(quietUntil([reviewWindow()], at(WEDNESDAY, 9, 29)), null)
+  assert.equal(quietUntil([reviewWindow()], BOTH, [], at(WEDNESDAY, 9, 0)), null)
+  assert.equal(quietUntil([reviewWindow()], BOTH, [], at(WEDNESDAY, 9, 29)), null)
 })
 
 test('a quiet stretch says when it lifts, naming the day only when it is not today', () => {
@@ -196,12 +218,126 @@ test('a quiet stretch says when it lifts, naming the day only when it is not tod
     reviewWindow({ id: 'morning', start: '09:00', end: '09:30' }),
     reviewWindow({ id: 'lunch', start: '12:00', end: '13:00' }),
   ]
-  assert.equal(quietUntil(windows, at(WEDNESDAY, 8, 47)), '09:00')
-  assert.equal(quietUntil(windows, at(WEDNESDAY, 9, 30)), '12:00')
-  assert.equal(quietUntil(windows, at(WEDNESDAY, 18, 0)), 'Thu 09:00')
+  assert.equal(quietUntil(windows, BOTH, [], at(WEDNESDAY, 8, 47)), '09:00')
+  assert.equal(quietUntil(windows, BOTH, [], at(WEDNESDAY, 9, 30)), '12:00')
+  assert.equal(quietUntil(windows, BOTH, [], at(WEDNESDAY, 18, 0)), 'Thu 09:00')
   // Friday evening on a weekdays-only schedule reads as Monday morning.
-  assert.equal(quietUntil(windows, at(SATURDAY - 1, 18, 0)), 'Mon 09:00')
-  assert.equal(quietUntil(windows, at(SATURDAY, 11, 0)), 'Mon 09:00')
+  assert.equal(quietUntil(windows, BOTH, [], at(SATURDAY - 1, 18, 0)), 'Mon 09:00')
+  assert.equal(quietUntil(windows, BOTH, [], at(SATURDAY, 11, 0)), 'Mon 09:00')
+})
+
+test('a window naming no account covers every one, including one added later', () => {
+  const all = reviewWindow()
+  assert.equal(windowCovers(all, WORK), true)
+  assert.equal(windowCovers(all, PERSONAL), true)
+  assert.equal(windowCovers(all, 'connected-next-march'), true)
+})
+
+test('a window naming accounts covers those and no others', () => {
+  const work = reviewWindow({ accounts: [WORK] })
+  assert.equal(windowCovers(work, WORK), true)
+  assert.equal(windowCovers(work, PERSONAL), false)
+})
+
+test('a window left scoped to accounts that are gone covers nothing', () => {
+  const orphan = reviewWindow({ accounts: ['signed-out-months-ago'] })
+  assert.equal(coversNothing(orphan, BOTH), true)
+  assert.equal(windowCovers(orphan, WORK), false)
+  // Which is what stops it firing: its scope is empty, so its count is always zero.
+  assert.equal(reviewsInScope(orphan, [on(WORK), on(PERSONAL)]).length, 0)
+  assert.deepEqual(
+    windowsToFire([orphan], at(WEDNESDAY, 9, 5), {}, [on(WORK), on(PERSONAL)]),
+    [],
+  )
+  // An all-accounts window is never in that state, however few accounts there are.
+  assert.equal(coversNothing(reviewWindow(), []), false)
+})
+
+test('a review no enabled window covers pings live whatever the clock says', () => {
+  const work = [reviewWindow({ accounts: [WORK] })]
+  // Deep in the night, outside every span: the covered account is quiet...
+  assert.equal(announcingAllowedFor(WORK, work, at(WEDNESDAY, 3, 0), {}), false)
+  // ...and the one nothing claims behaves as it did before any of this existed.
+  assert.equal(announcingAllowedFor(PERSONAL, work, at(WEDNESDAY, 3, 0), {}), true)
+})
+
+test('liveness is the union across the windows covering an account', () => {
+  const today = localDay(at(WEDNESDAY, 12, 30))
+  const windows = [
+    reviewWindow({ id: 'work-morning', accounts: [WORK], start: '09:00', end: '09:30' }),
+    reviewWindow({ id: 'everything-lunch', start: '12:00', end: '13:00' }),
+  ]
+  // Lunch has fired and covers everything, so both accounts are live inside it.
+  const fired = { 'everything-lunch': today }
+  assert.equal(announcingAllowedFor(WORK, windows, at(WEDNESDAY, 12, 30), fired), true)
+  assert.equal(announcingAllowedFor(PERSONAL, windows, at(WEDNESDAY, 12, 30), fired), true)
+  // The morning window having fired says nothing about the afternoon.
+  const morning = { 'work-morning': today }
+  assert.equal(announcingAllowedFor(WORK, windows, at(WEDNESDAY, 12, 30), morning), false)
+  assert.equal(announcingAllowedFor(WORK, windows, at(WEDNESDAY, 9, 5), morning), true)
+  // Personal is covered only by lunch, so the morning span leaves it quiet.
+  assert.equal(announcingAllowedFor(PERSONAL, windows, at(WEDNESDAY, 9, 5), morning), false)
+})
+
+test('a window counts its threshold over its own scope, not the whole deck', () => {
+  const work = reviewWindow({ accounts: [WORK], minimum: 2 })
+  const busyElsewhere = [on(PERSONAL), on(PERSONAL), on(PERSONAL), on(WORK)]
+  assert.deepEqual(windowsToFire([work], at(WEDNESDAY, 9, 5), {}, busyElsewhere), [])
+  // A second review on the account it actually watches is what trips it.
+  const due = windowsToFire([work], at(WEDNESDAY, 9, 5), {}, [...busyElsewhere, on(WORK)])
+  assert.deepEqual(
+    due.map((window) => window.id),
+    ['morning'],
+  )
+})
+
+test('windows of differing scope firing on one tick come back together', () => {
+  const windows = [
+    reviewWindow({ id: 'work', accounts: [WORK] }),
+    reviewWindow({ id: 'personal', accounts: [PERSONAL] }),
+    reviewWindow({ id: 'quiet-one', accounts: ['nobody'] }),
+  ]
+  const due = windowsToFire(windows, at(WEDNESDAY, 9, 5), {}, [on(WORK), on(PERSONAL)])
+  // One notification, over the union of what these two cover; the third covers
+  // nothing and stays out of it.
+  assert.deepEqual(
+    due.map((window) => window.id),
+    ['work', 'personal'],
+  )
+})
+
+test('the scope clause names the accounts, or says there are none left', () => {
+  assert.equal(describeScope(reviewWindow(), SIGNED_IN), 'All accounts')
+  assert.equal(describeScope(reviewWindow({ accounts: [WORK] }), SIGNED_IN), 'Work GitHub')
+  assert.equal(
+    describeScope(reviewWindow({ accounts: [WORK, PERSONAL] }), SIGNED_IN),
+    'Work GitHub, Personal Forgejo',
+  )
+  assert.equal(describeScope(reviewWindow({ accounts: ['gone'] }), SIGNED_IN), 'Covers no account')
+})
+
+test('the quiet line follows the accounts a schedule actually claims', () => {
+  const work = [reviewWindow({ accounts: [WORK] })]
+  // Work is quiet and a work review is waiting for it: say when that lifts.
+  assert.equal(quietUntil(work, BOTH, [on(WORK)], at(WEDNESDAY, 8, 0)), '09:00')
+  // Only an unclaimed account is waiting, and that pinged as it landed - there is
+  // no silence to account for, so the line stays away.
+  assert.equal(quietUntil(work, BOTH, [on(PERSONAL)], at(WEDNESDAY, 8, 0)), null)
+  // Nothing waiting at all still reassures: the schedule is holding the line.
+  assert.equal(quietUntil(work, BOTH, [], at(WEDNESDAY, 8, 0)), '09:00')
+  // Nothing claims personal, so on its own it is never a reason to be quiet.
+  assert.equal(quietUntil(work, [PERSONAL], [], at(WEDNESDAY, 8, 0)), null)
+})
+
+test('the quiet line reports the soonest return across the accounts being held', () => {
+  const windows = [
+    reviewWindow({ id: 'work', accounts: [WORK], start: '09:00', end: '09:30' }),
+    reviewWindow({ id: 'personal', accounts: [PERSONAL], start: '17:00', end: '18:00' }),
+  ]
+  // Both held at 08:00; work comes back first and that is the whole answer.
+  assert.equal(quietUntil(windows, BOTH, [], at(WEDNESDAY, 8, 0)), '09:00')
+  // Inside the work span, only personal is still held, so its own time is next.
+  assert.equal(quietUntil(windows, BOTH, [], at(WEDNESDAY, 9, 10)), '17:00')
 })
 
 test('localDay names the local calendar day, zero padded', () => {
@@ -218,11 +354,26 @@ test('a window has to be saveable before it can be saved', () => {
   assert.match(String(windowProblem(reviewWindow({ minimum: 0 }))), /at least one review/)
 })
 
+const SIGNED_IN = [
+  { id: WORK, label: 'Work GitHub' },
+  { id: PERSONAL, label: 'Personal Forgejo' },
+]
+
 test('a row says its own schedule in plain language', () => {
-  assert.equal(describeWindow(reviewWindow()), 'Mon-Fri · 09:00-09:30 · 1+ waiting')
   assert.equal(
-    describeWindow(reviewWindow({ days: [6, 0], start: '11:00', end: '12:00', minimum: 3 })),
-    'Sat, Sun · 11:00-12:00 · 3+ waiting',
+    describeWindow(reviewWindow(), SIGNED_IN),
+    'Mon-Fri · 09:00-09:30 · 1+ waiting · All accounts',
+  )
+  assert.equal(
+    describeWindow(
+      reviewWindow({ days: [6, 0], start: '11:00', end: '12:00', minimum: 3 }),
+      SIGNED_IN,
+    ),
+    'Sat, Sun · 11:00-12:00 · 3+ waiting · All accounts',
+  )
+  assert.equal(
+    describeWindow(reviewWindow({ accounts: [WORK] }), SIGNED_IN),
+    'Mon-Fri · 09:00-09:30 · 1+ waiting · Work GitHub',
   )
 })
 
