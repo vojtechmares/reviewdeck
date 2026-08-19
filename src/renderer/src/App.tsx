@@ -120,11 +120,13 @@ export function App(): React.JSX.Element {
         <div className="flex min-w-0 items-baseline gap-2">
           <h1 className="text-[13.5px] font-semibold tracking-tight">Reviewdeck</h1>
           <span className="truncate text-[11.5px] text-muted-foreground">
-            {deck.syncing
-              ? 'Syncing…'
-              : deck.lastSyncedAt
-                ? `Updated ${relativeTime(deck.lastSyncedAt)}`
-                : 'Not synced yet'}
+            {deck.syncing ? (
+              <SyncingLabel />
+            ) : deck.lastSyncedAt ? (
+              `Updated ${relativeTime(deck.lastSyncedAt)}`
+            ) : (
+              'Not synced yet'
+            )}
           </span>
         </div>
 
@@ -317,6 +319,27 @@ export function App(): React.JSX.Element {
       <AccountsDialog open={accountsOpen} onClose={() => setAccountsOpen(false)} />
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
+  )
+}
+
+/**
+ * Syncing, with the ellipsis filling in a dot at a time so the label reads as live.
+ *
+ * Nothing is scheduled to drive it: the dots are three elements the stylesheet
+ * fades in on a cycle, and the label only exists while a sync is in flight, so it
+ * stops by going away rather than by anything being torn down. The dots are hidden
+ * from assistive technology, which wants the word and not the punctuation.
+ */
+function SyncingLabel(): React.JSX.Element {
+  return (
+    <>
+      Syncing
+      <span aria-hidden className="ellipsis-live">
+        <span>.</span>
+        <span>.</span>
+        <span>.</span>
+      </span>
+    </>
   )
 }
 

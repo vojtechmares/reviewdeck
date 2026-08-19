@@ -642,3 +642,46 @@
 .rise {
   animation: rd-rise 200ms ease-out both;
 }
+
+/**
+ * An ellipsis that fills in a dot at a time, so a label that has to sit there for
+ * a while reads as live rather than stuck.
+ *
+ * All three dots are in the layout the whole time and only their opacity moves, so
+ * whatever sits beside the label cannot shift as the count changes. Under reduced
+ * motion nothing animates and all three simply stay put.
+ */
+@keyframes rd-ellipsis-second {
+  0%,
+  33% {
+    opacity: 0;
+  }
+  34%,
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes rd-ellipsis-third {
+  0%,
+  66% {
+    opacity: 0;
+  }
+  67%,
+  100% {
+    opacity: 1;
+  }
+}
+.ellipsis-live > :nth-child(2) {
+  animation: rd-ellipsis-second 1.2s infinite;
+}
+.ellipsis-live > :nth-child(3) {
+  animation: rd-ellipsis-third 1.2s infinite;
+}
+
+/* Spelled out rather than `> *`, which the rules above outrank on specificity. */
+@media (prefers-reduced-motion: reduce) {
+  .ellipsis-live > :nth-child(2),
+  .ellipsis-live > :nth-child(3) {
+    animation: none;
+  }
+}
