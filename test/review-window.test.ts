@@ -7,6 +7,8 @@ import {
   isWithinWindow,
   localDay,
   minutesOfDay,
+  nextWindowStart,
+  quietUntil,
   windowProblem,
   windowShouldFire,
   windowsToFire,
@@ -142,6 +144,64 @@ test('liveness begins when the roll-up does, not when the clock enters the span'
   assert.equal(announcingAllowed(windows, at(WEDNESDAY, 9, 30), { morning: today }), false)
   // Yesterday's firing does not make today live.
   assert.equal(announcingAllowed(windows, at(WEDNESDAY, 9, 5), { morning: '2026-08-18' }), false)
+})
+
+test('the next boundary is the next time a window opens, later the same day', () => {
+  const windows = [
+    reviewWindow({ id: 'morning', start: '09:00', end: '09:30' }),
+    reviewWindow({ id: 'lunch', start: '12:00', end: '13:00' }),
+  ]
+  assert.deepEqual(nextWindowStart(windows, at(WEDNESDAY, 7, 0)), at(WEDNESDAY, 9, 0))
+  // Inside the morning span the morning has already opened; lunch is next.
+  assert.deepEqual(nextWindowStart(windows, at(WEDNESDAY, 9, 15)), at(WEDNESDAY, 12, 0))
+  assert.deepEqual(nextWindowStart(windows, at(WEDNESDAY, 9, 30)), at(WEDNESDAY, 12, 0))
+})
+
+test('the next boundary rolls over to the next day the schedule covers', () => {
+  const windows = [reviewWindow()]
+  // Wednesday evening, so tomorrow morning.
+  assert.deepEqual(nextWindowStart(windows, at(WEDNESDAY, 18, 0)), at(WEDNESDAY + 1, 9, 0))
+  // Friday evening on a weekdays-only schedule has to reach Monday, not Saturday.
+  assert.deepEqual(nextWindowStart(windows, at(SATURDAY - 1, 18, 0)), at(SATURDAY + 2, 9, 0))
+})
+
+test('a window that covers only today opens again a week out, not never', () => {
+  const wednesdays = [reviewWindow({ days: [3] })]
+  assert.deepEqual(nextWindowStart(wednesdays, at(WEDNESDAY, 10, 0)), at(WEDNESDAY + 7, 9, 0))
+})
+
+test('a schedule that describes no span at all has no next boundary', () => {
+  assert.equal(nextWindowStart([], at(WEDNESDAY, 10, 0)), null)
+  assert.equal(nextWindowStart([reviewWindow({ enabled: false })], at(WEDNESDAY, 10, 0)), null)
+  assert.equal(nextWindowStart([reviewWindow({ days: [] })], at(WEDNESDAY, 10, 0)), null)
+  // Crosses midnight, so it describes nothing this can open.
+  assert.equal(
+    nextWindowStart([reviewWindow({ start: '22:00', end: '02:00' })], at(WEDNESDAY, 10, 0)),
+    null,
+  )
+})
+
+test('the menu bar says nothing extra when there is no schedule to be quiet for', () => {
+  assert.equal(quietUntil([], at(WEDNESDAY, 3, 0)), null)
+  assert.equal(quietUntil([reviewWindow({ enabled: false })], at(WEDNESDAY, 3, 0)), null)
+})
+
+test('the menu bar says nothing extra while a window is open', () => {
+  assert.equal(quietUntil([reviewWindow()], at(WEDNESDAY, 9, 0)), null)
+  assert.equal(quietUntil([reviewWindow()], at(WEDNESDAY, 9, 29)), null)
+})
+
+test('a quiet stretch says when it lifts, naming the day only when it is not today', () => {
+  const windows = [
+    reviewWindow({ id: 'morning', start: '09:00', end: '09:30' }),
+    reviewWindow({ id: 'lunch', start: '12:00', end: '13:00' }),
+  ]
+  assert.equal(quietUntil(windows, at(WEDNESDAY, 8, 47)), '09:00')
+  assert.equal(quietUntil(windows, at(WEDNESDAY, 9, 30)), '12:00')
+  assert.equal(quietUntil(windows, at(WEDNESDAY, 18, 0)), 'Thu 09:00')
+  // Friday evening on a weekdays-only schedule reads as Monday morning.
+  assert.equal(quietUntil(windows, at(SATURDAY - 1, 18, 0)), 'Mon 09:00')
+  assert.equal(quietUntil(windows, at(SATURDAY, 11, 0)), 'Mon 09:00')
 })
 
 test('localDay names the local calendar day, zero padded', () => {

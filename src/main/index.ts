@@ -5,6 +5,7 @@ import { registerImageScheme, serveImages } from './images.ts'
 import { flushDrafts, registerIpc } from './ipc.ts'
 import { getSettings } from './store.ts'
 import { visibleReviews } from '@shared/types.ts'
+import { quietUntil } from '@shared/review-window.ts'
 
 const isDev = !app.isPackaged
 
@@ -100,15 +101,23 @@ function createTray(): void {
     const settings = getSettings()
     const waiting = visibleReviews(items, settings)
     const failing = statuses.filter((status) => !status.ok).length
+    // The count keeps climbing through a quiet stretch - only the interrupt channel
+    // goes quiet, never the ambient one - so this line is the only place that can
+    // say the silence was asked for. With notifications off there is nothing to
+    // promise: saying they resume at noon would be a lie when nothing fires then.
+    const quiet = settings.notificationsEnabled
+      ? quietUntil(settings.reviewWindows, new Date())
+      : null
     // Empty rather than a space when the count is off, so the icon sits where it
     // would if nothing were ever drawn beside it. The context menu still counts.
     tray?.setTitle(settings.showMenuBarCount && waiting.length ? ` ${waiting.length}` : '')
     tray?.setContextMenu(
       Menu.buildFromTemplate([
         {
-          label: waiting.length
-            ? `${waiting.length} review${waiting.length === 1 ? '' : 's'} waiting`
-            : 'Nothing waiting on you',
+          label:
+            (waiting.length
+              ? `${waiting.length} review${waiting.length === 1 ? '' : 's'} waiting`
+              : 'Nothing waiting on you') + (quiet ? ` · quiet until ${quiet}` : ''),
           enabled: false,
         },
         ...(failing ? [{ label: `${failing} account(s) failing to sync`, enabled: false }] : []),

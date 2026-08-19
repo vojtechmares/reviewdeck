@@ -20,6 +20,10 @@ import type { ReviewWindow } from './types.ts'
 /** Twice a minute, because a three-minute sync would let a 09:00 span open at 09:02. */
 export const WINDOW_TICK_MS = 30_000
 
+function pad(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
 /** Minutes since local midnight, or null when the text is not a wall clock. */
 export function minutesOfDay(time: string): number | null {
   const match = /^(\d{1,2}):(\d{2})$/.exec(time.trim())
@@ -32,8 +36,20 @@ export function minutesOfDay(time: string): number | null {
 
 /** The local calendar day, which is the key the once-a-day guarantee turns on. */
 export function localDay(now: Date): string {
-  const pad = (value: number): string => String(value).padStart(2, '0')
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+/**
+ * A window's span in minutes since midnight, or null when it does not describe
+ * one: unreadable times, or an end that fails to come after its start. A window
+ * may not cross midnight - anyone wanting 22:00 to 02:00 makes two - and refusing
+ * to read one that tries is what lets everything downstream be a plain comparison.
+ */
+function spanOf(window: ReviewWindow): { start: number; end: number } | null {
+  const start = minutesOfDay(window.start)
+  const end = minutesOfDay(window.end)
+  if (start === null || end === null || end <= start) return null
+  return { start, end }
 }
 
 /**
@@ -45,12 +61,11 @@ export function localDay(now: Date): string {
  * being a plain comparison is exactly why the rest of this file needs no cases.
  */
 export function isWithinWindow(window: ReviewWindow, now: Date): boolean {
-  const start = minutesOfDay(window.start)
-  const end = minutesOfDay(window.end)
-  if (start === null || end === null || end <= start) return false
+  const span = spanOf(window)
+  if (!span) return false
   if (!window.days.includes(now.getDay())) return false
   const at = now.getHours() * 60 + now.getMinutes()
-  return at >= start && at < end
+  return at >= span.start && at < span.end
 }
 
 /**
@@ -98,6 +113,66 @@ export function announcingAllowed(
   if (!scheduled.length) return true
   const today = localDay(now)
   return scheduled.some((window) => isWithinWindow(window, now) && firedOn[window.id] === today)
+}
+
+/**
+ * The next moment an enabled window opens, or null when none ever does.
+ *
+ * Built by walking forward a day at a time from today rather than by arithmetic on
+ * a timestamp, so the answer is a local wall clock on a real calendar day: a
+ * Friday evening lands on Monday morning when the schedule is weekdays, and a
+ * clock that goes forward overnight moves the boundary with it.
+ */
+export function nextWindowStart(windows: ReviewWindow[], now: Date): Date | null {
+  let soonest: Date | null = null
+
+  // Eight days, not seven: a window that only covers today has already opened, so
+  // its next opening is the same weekday a week out.
+  for (let offset = 0; offset <= 7; offset++) {
+    for (const window of windows) {
+      if (!window.enabled) continue
+      const span = spanOf(window)
+      if (!span) continue
+      const opensAt = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + offset,
+        0,
+        span.start,
+      )
+      if (!window.days.includes(opensAt.getDay())) continue
+      if (opensAt <= now) continue
+      if (!soonest || opensAt < soonest) soonest = opensAt
+    }
+    if (soonest) return soonest
+  }
+  return soonest
+}
+
+/**
+ * When the app is next able to interrupt, phrased for the menu bar - or null when
+ * it is not in a quiet stretch and there is nothing to reassure anybody about.
+ *
+ * A feature whose job is silence has to prove the silence is deliberate: reviews
+ * arriving unannounced read as a broken notification until something says the
+ * quiet was asked for and when it lifts.
+ *
+ * Inside an open window this says nothing. The interrupt channel is open there
+ * whether or not the roll-up has landed in the last few seconds, and "quiet until"
+ * is about the stretches between windows rather than the wait for the next tick.
+ */
+export function quietUntil(windows: ReviewWindow[], now: Date): string | null {
+  const scheduled = windows.filter((window) => window.enabled)
+  if (!scheduled.length) return null
+  if (scheduled.some((window) => isWithinWindow(window, now))) return null
+
+  const resumes = nextWindowStart(scheduled, now)
+  if (!resumes) return null
+
+  const clock = `${pad(resumes.getHours())}:${pad(resumes.getMinutes())}`
+  // The day only earns a mention when it is not this one, so the common case -
+  // quiet this morning, back at noon - stays a time and nothing else.
+  return localDay(resumes) === localDay(now) ? clock : `${dayName(resumes.getDay())} ${clock}`
 }
 
 /** Why this window cannot be saved, or null when it is fine. */
