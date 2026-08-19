@@ -8,9 +8,11 @@ import { Button } from './ui/button'
 export function SettingsDialog({
   open,
   onClose,
+  onOpenSchedule,
 }: {
   open: boolean
   onClose: () => void
+  onOpenSchedule: () => void
 }): React.JSX.Element {
   const { settings, updateSettings } = useApp()
   const [info, setInfo] = useState<{ version: string; electron: string } | null>(null)
@@ -22,6 +24,8 @@ export function SettingsDialog({
   const set = <K extends keyof Settings>(key: K, value: Settings[K]): void => {
     void updateSettings({ [key]: value } as Partial<Settings>)
   }
+
+  const windowCount = settings.reviewWindows.length
 
   return (
     <Dialog
@@ -81,6 +85,19 @@ export function SettingsDialog({
             disabled={!settings.notificationsEnabled}
             onChange={(value) => set('playSound', value)}
           />
+          <div className="flex items-center gap-3">
+            <span className="flex-1 text-[12.5px]">Review schedule</span>
+            <Button size="sm" onClick={onOpenSchedule} disabled={!settings.notificationsEnabled}>
+              {windowCount === 0
+                ? 'Set up…'
+                : `${windowCount} window${windowCount === 1 ? '' : 's'}…`}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Windows keep the interruption to the part of the day you actually review in:
+            outside them Reviewdeck stays quiet and rolls everything up when the next one
+            opens. With none set it notifies whenever it finds something.
+          </p>
         </Section>
 
         <Section title="Appearance">

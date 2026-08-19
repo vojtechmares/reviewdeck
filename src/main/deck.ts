@@ -15,11 +15,26 @@ import {
   getToken,
   listAccounts,
   loadDeckCache,
+  loadWindowsFired,
   markSeen,
   persistDeckCache,
+  recordWindowsFired,
 } from './store.ts'
-import { idsToRecord, reviewsToAnnounce } from '@shared/types.ts'
-import type { Account, AccountStatus, DeckState, ReviewItem } from '@shared/types.ts'
+import { idsToRecord, reviewsToAnnounce, visibleReviews } from '@shared/types.ts'
+import {
+  announcingAllowed,
+  localDay,
+  windowsToFire,
+  WINDOW_TICK_MS,
+} from '@shared/review-window.ts'
+import type {
+  Account,
+  AccountStatus,
+  DeckState,
+  ReviewItem,
+  ReviewWindow,
+  Settings,
+} from '@shared/types.ts'
 import type { Session } from './providers/types.ts'
 
 class Deck extends EventEmitter {
@@ -32,6 +47,9 @@ class Deck extends EventEmitter {
   private lastSyncedAt: string | undefined
   private syncTimer: NodeJS.Timeout | null = null
   private checkTimer: NodeJS.Timeout | null = null
+  private windowTimer: NodeJS.Timeout | null = null
+  /** Guards the tick against itself, so a slow fan-out cannot fire a window twice. */
+  private openingWindows = false
   /** Suppresses notifications on the very first sync after launch. */
   private primed = false
 
@@ -208,15 +226,100 @@ class Deck extends EventEmitter {
     }, Math.max(15, checkPollInterval) * 1000)
   }
 
+  /**
+   * The clock tick that opens a review window.
+   *
+   * Its own timer rather than the sync one: syncing defaults to every three
+   * minutes, and hanging the boundary check off that would let a 09:00 session
+   * start at 09:02:59.
+   */
+  private async openDueWindows(): Promise<void> {
+    // A fan-out slower than the tick would otherwise let the next tick through
+    // while this one is still deciding, and both would fire the same window.
+    if (this.openingWindows) return
+
+    const settings = getSettings()
+    // The master toggle wins over everything in the schedule.
+    if (!settings.notificationsEnabled) return
+
+    // The cheap question first. This runs twice a minute, and only a window that
+    // is genuinely due is worth a round-trip to every host.
+    if (!this.windowsDue(settings, new Date()).length) return
+
+    this.openingWindows = true
+    try {
+      await this.refresh()
+
+      // Asked again against what the refresh brought back, and against the clock
+      // as it is now rather than as it was before the fan-out went out.
+      const confirmed = this.windowsDue(getSettings(), new Date())
+      if (confirmed.length) this.fireRollUp(confirmed)
+    } finally {
+      this.openingWindows = false
+    }
+  }
+
+  private windowsDue(settings: Settings, now: Date): ReviewWindow[] {
+    // No schedule is the common case and has to cost nothing: this runs twice a
+    // minute whether or not anybody has ever opened the dialog.
+    if (!settings.reviewWindows.some((window) => window.enabled)) return []
+    const waiting = visibleReviews(this.items(), settings).length
+    return windowsToFire(settings.reviewWindows, now, loadWindowsFired(), waiting)
+  }
+
+  /**
+   * One roll-up for however many windows opened on this tick - two banners saying
+   * the same number is the app repeating itself - stating what is waiting rather
+   * than what changed. After a quiet night that is the actionable sentence, and it
+   * is also what makes the notification idempotent enough for windows to overlap.
+   */
+  private fireRollUp(due: ReviewWindow[]): void {
+    const settings = getSettings()
+    const waiting = visibleReviews(this.items(), settings)
+
+    recordWindowsFired(
+      due.map((window) => window.id),
+      localDay(new Date()),
+    )
+    // Everything the roll-up just summarised, so the next poll inside the span does
+    // not then ping individually about a review it already covered.
+    markSeen(idsToRecord(this.items()))
+
+    // Already looking at the deck: the banner would be reading the screen back to
+    // them. Recorded as fired all the same, so liveness starts here rather than the
+    // roll-up ambushing them later - which also disposes of the cold-start case,
+    // since the app shows its window on launch.
+    if (isWindowFocused()) return
+    if (!Notification.isSupported()) return
+
+    const notification = new Notification({
+      title: `${waiting.length} review${waiting.length === 1 ? '' : 's'} waiting`,
+      body: waiting
+        .slice(0, 4)
+        .map((item) => `${item.repo} #${item.number}`)
+        .join('\n'),
+      silent: !settings.playSound,
+    })
+    notification.on('click', focusWindow)
+    notification.show()
+  }
+
   private announceNew(): void {
+    const settings = getSettings()
+    // On the first run after install every item is "new"; do not blast the user.
+    const firstSync = !this.primed
+    this.primed = true
+
+    // Outside every review window nothing is announced and, just as importantly,
+    // nothing is recorded as seen. This is the opposite of a review hidden by a
+    // standing preference: that one the user never wants, so it is recorded and
+    // forgotten, whereas this one they want later. Marking it here would leave the
+    // roll-up that opens the next window with nothing left to say.
+    if (!announcingAllowed(settings.reviewWindows, new Date(), loadWindowsFired())) return
+
     const fresh = markSeen(idsToRecord(this.items()))
 
-    // On the first run after install every item is "new"; do not blast the user.
-    if (!this.primed) {
-      this.primed = true
-      return
-    }
-    const settings = getSettings()
+    if (firstSync) return
     if (!settings.notificationsEnabled || !fresh.length) return
     if (!Notification.isSupported()) return
 
@@ -274,13 +377,18 @@ class Deck extends EventEmitter {
       },
       Math.max(30, pollInterval) * 1000,
     )
+    this.windowTimer = setInterval(() => {
+      void this.openDueWindows()
+    }, WINDOW_TICK_MS)
   }
 
   stop(): void {
     if (this.syncTimer) clearInterval(this.syncTimer)
     if (this.checkTimer) clearTimeout(this.checkTimer)
+    if (this.windowTimer) clearInterval(this.windowTimer)
     this.syncTimer = null
     this.checkTimer = null
+    this.windowTimer = null
   }
 
   /** Apply a settings change that affects timing without losing the current deck. */
@@ -318,6 +426,11 @@ function signatureOf(entries: Account[]): string {
     .map((account) => account.id)
     .sort()
     .join(' ')
+}
+
+/** Whether the deck is already in front of them, banner or no banner. */
+function isWindowFocused(): boolean {
+  return BrowserWindow.getAllWindows().some((window) => window.isFocused())
 }
 
 function focusWindow(): void {

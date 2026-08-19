@@ -192,6 +192,25 @@ export interface LineCommentDraft {
   oldLine?: number
 }
 
+/**
+ * A recurring stretch of the day the app is allowed to interrupt in.
+ *
+ * The list of them is the whole feature: empty means the app notifies whenever a
+ * poll finds something, exactly as it always has, and adding one is what buys the
+ * quiet. The rules that read this live in `review-window.ts`.
+ */
+export interface ReviewWindow {
+  id: string
+  enabled: boolean
+  /** The days it covers, numbered as `Date#getDay` does - 0 is Sunday. */
+  days: number[]
+  /** Local wall clock, `HH:MM`. The span is [start, end) and may not cross midnight. */
+  start: string
+  end: string
+  /** Stays quiet until at least this many reviews are waiting. */
+  minimum: number
+}
+
 export interface Settings {
   /** Seconds between background refreshes. */
   pollInterval: number
@@ -208,6 +227,8 @@ export interface Settings {
   /** Draw the waiting count beside the menu bar icon. Off leaves the icon alone. */
   showMenuBarCount: boolean
   launchAtLogin: boolean
+  /** When the app may interrupt. Empty means whenever it finds something. */
+  reviewWindows: ReviewWindow[]
   /**
    * The command a copied agent handoff is built around. Any command or shell alias
    * will do - it is the user's own shell that runs it, not the app.
@@ -229,6 +250,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hideDrafts: true,
   showMenuBarCount: true,
   launchAtLogin: false,
+  reviewWindows: [],
   agentCommand: DEFAULT_AGENT_COMMAND,
 }
 

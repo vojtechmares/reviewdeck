@@ -33,6 +33,8 @@ interface Vault {
   draftSets: Record<string, DraftSet>
   /** The last synced deck, so a launch has reviews to show before the fan-out. */
   deck: DeckCache
+  /** windowId -> the local day its roll-up last fired, so once a day survives a quit. */
+  windowsFired: Record<string, string>
 }
 
 const EMPTY: Vault = {
@@ -44,6 +46,7 @@ const EMPTY: Vault = {
   drafts: [],
   draftSets: {},
   deck: emptyDeckCache(),
+  windowsFired: {},
 }
 
 let cache: Vault | null = null
@@ -72,6 +75,7 @@ function load(): Vault {
       drafts: parsed.drafts ?? [],
       draftSets: parsed.draftSets ?? {},
       deck: readDeckCache(parsed.deck),
+      windowsFired: parsed.windowsFired ?? {},
     }
   } catch (error) {
     // A corrupt file should not brick the app; keep the bad copy for forensics.
@@ -176,6 +180,20 @@ export function loadDeckCache(): Record<string, ReviewItem[]> {
 export function persistDeckCache(items: Record<string, ReviewItem[]>): void {
   const vault = load()
   vault.deck = { ...emptyDeckCache(), items }
+  persist()
+}
+
+/** The local day each review window last fired, so a relaunch mid-span knows. */
+export function loadWindowsFired(): Record<string, string> {
+  return { ...load().windowsFired }
+}
+
+/** Records a roll-up against every window that raised it, on the day it went out. */
+export function recordWindowsFired(windowIds: string[], day: string): void {
+  if (!windowIds.length) return
+  const vault = load()
+  vault.windowsFired = { ...vault.windowsFired }
+  for (const id of windowIds) vault.windowsFired[id] = day
   persist()
 }
 

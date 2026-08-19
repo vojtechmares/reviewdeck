@@ -22,6 +22,7 @@ import { cn, relativeTime } from '@/lib/utils'
 import { useApp } from '@/hooks/useApp'
 import { AccountsDialog } from './components/AccountsDialog'
 import { SettingsDialog } from './components/SettingsDialog'
+import { ScheduleDialog } from './components/ScheduleDialog'
 import { PullView } from './components/PullView'
 import { ReviewCard } from './components/ReviewCard'
 import { Button } from './components/ui/button'
@@ -40,6 +41,7 @@ export function App(): React.JSX.Element {
   const [showFilters, setShowFilters] = useState(false)
   const [accountsOpen, setAccountsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [scheduleOpen, setScheduleOpen] = useState(false)
   const [revealDrafts, setRevealDrafts] = useState(false)
 
   const shown = useMemo(
@@ -360,7 +362,17 @@ export function App(): React.JSX.Element {
       </div>
 
       <AccountsDialog open={accountsOpen} onClose={() => setAccountsOpen(false)} />
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        // One modal at a time: the schedule replaces settings rather than stacking
+        // on it, so there is only ever one focus trap and one Escape to answer.
+        onOpenSchedule={() => {
+          setSettingsOpen(false)
+          setScheduleOpen(true)
+        }}
+      />
+      <ScheduleDialog open={scheduleOpen} onClose={() => setScheduleOpen(false)} />
     </div>
   )
 }
