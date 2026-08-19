@@ -84,10 +84,11 @@ cask "reviewdeck" do
   app "Reviewdeck.app"
 
   # Homebrew 6 removed "brew install --cask --no-quarantine", so the cask has to
-  # clear the flag itself. Reviewdeck is ad-hoc signed but not notarised, and
-  # Gatekeeper will not launch a quarantined bundle it cannot verify. Failing
-  # here would abort the install after the app is already in place, and a
-  # Gatekeeper prompt is the better of those two outcomes.
+  # clear the flag itself. Reviewdeck is signed with a self-signed certificate
+  # and is not notarised, and Gatekeeper will not launch a quarantined bundle
+  # whose signature it cannot trace back to Apple. Failing here would abort the
+  # install after the app is already in place, and a Gatekeeper prompt is the
+  # better of those two outcomes.
   postflight do
     system_command "/usr/bin/xattr",
                    args:         ["-d", "-r", "com.apple.quarantine", "#{appdir}/Reviewdeck.app"],
@@ -107,9 +108,10 @@ cask "reviewdeck" do
   ]
 
   caveats <<~EOS
-    Reviewdeck is ad-hoc signed but not notarised. This cask clears the
-    com.apple.quarantine flag on Reviewdeck.app after installing it, which is
-    what lets it launch without Gatekeeper refusing to verify it.
+    Reviewdeck is signed with a self-signed certificate and is not notarised.
+    This cask clears the com.apple.quarantine flag on Reviewdeck.app after
+    installing it, which is what lets it launch without Gatekeeper refusing to
+    verify it.
 
     Access tokens are kept in the macOS Keychain via Electron's safeStorage;
     "brew uninstall --zap" removes the on-disk config but not the Keychain

@@ -7,13 +7,16 @@
 #   ./scripts/verify-app.sh [path/to/Reviewdeck.app]
 #
 # Environment:
-#   VERSION   expected CFBundleShortVersionString (optional)
+#   VERSION                   expected CFBundleShortVersionString (optional)
+#   REQUIRE_SIGNED_IDENTITY   set to refuse an ad-hoc signature (optional)
 #
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="${1:-release/mac-arm64/Reviewdeck.app}"
 APP_ID="cz.mares.reviewdeck"
 VERSION="${VERSION:-}"
+CERT="$HERE/../resources/reviewdeck-self-signed.pem"
 
 fail() {
 	# GitHub renders ::error:: as an annotation; elsewhere it is just a line.
@@ -51,6 +54,34 @@ codesign --verify --deep --strict "$APP" || fail "$APP is not validly signed"
 # seals nothing, and macOS will refuse to launch it once it is quarantined.
 SIGNED_ID="$(codesign -dv "$APP" 2>&1 | sed -n 's/^Identifier=//p')"
 [[ "$SIGNED_ID" == "$APP_ID" ]] || fail "signed as '$SIGNED_ID', expected '$APP_ID'"
-echo "    signature: ad-hoc, sealed as $SIGNED_ID"
+
+# Ad-hoc leaves no certificate chain, so an empty Authority is how the two
+# cases tell themselves apart.
+AUTHORITY="$(codesign -dv --verbose=4 "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+PINNED="$("$HERE/signing-identity.sh" --pinned)"
+
+if [[ -z "$AUTHORITY" ]]; then
+	[[ -z "${REQUIRE_SIGNED_IDENTITY:-}" ]] ||
+		fail "$APP is ad-hoc signed, expected '$PINNED' - the certificate never made it into the keychain"
+	echo "    signature: ad-hoc, sealed as $SIGNED_ID"
+	echo "==> OK"
+	exit 0
+fi
+
+[[ "$AUTHORITY" == "$PINNED" ]] || fail "signed by '$AUTHORITY', expected '$PINNED'"
+
+# The whole reason for signing with a stable identity: the requirement macOS
+# records when it grants an app access to a Keychain item names the certificate
+# rather than the code hash, so the grant survives the next build. An ad-hoc
+# signature anchors the same requirement to a cdhash, which is what made the
+# password prompt come back on every upgrade.
+DR="$(codesign -d -r- "$APP" 2>&1 | sed -n 's/^designated => //p')"
+EXPECTED_SHA1="$(openssl x509 -in "$CERT" -noout -fingerprint -sha1 |
+	sed 's/.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+[[ "$DR" == *"certificate root = H\"$EXPECTED_SHA1\""* ]] ||
+	fail "designated requirement is not anchored to $CERT: $DR"
+
+echo "    signature: $AUTHORITY, sealed as $SIGNED_ID"
+echo "    requirement: $DR"
 
 echo "==> OK"

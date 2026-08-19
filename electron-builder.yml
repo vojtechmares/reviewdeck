@@ -9,10 +9,14 @@ files:
 mac:
   icon: resources/icon.icns
   category: public.app-category.developer-tools
-  # Ad-hoc, always. There is no Developer ID certificate, and pinning the
-  # identity keeps a local `pnpm dist` the same shape as the release workflow
-  # instead of quietly picking up whatever happens to be in the keychain.
-  identity: "-"
+  # Pinned to the self-signed release certificate, so a build never picks up
+  # whatever else is in the keychain - a maintainer machine also carries an
+  # Apple Development certificate, which is not what ships. The public half is
+  # resources/reviewdeck-self-signed.pem; the private key reaches CI through
+  # the CSC_LINK secret. A machine without it - a fork's CI, a contributor's
+  # laptop - cannot make this signature, so scripts/signing-identity.sh hands
+  # electron-builder "-" instead and the build comes out ad-hoc.
+  identity: "Reviewdeck Self-Signed"
   target:
     # The dmg is what a human downloads; the zip is what the Homebrew cask
     # installs, so brew does not have to mount a disk image.

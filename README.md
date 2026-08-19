@@ -51,9 +51,10 @@ brew install --cask vojtechmares/tap/reviewdeck
 Or take the `.dmg` from the [latest release](https://github.com/vojtechmares/reviewdeck/releases/latest)
 and drag `Reviewdeck.app` into Applications.
 
-Reviewdeck is ad-hoc signed but not notarised - there is no Apple Developer ID behind it - so
-Gatekeeper will not launch a copy it saw arrive from the internet until the quarantine flag is
-gone. The cask clears it for you; a manual download needs right-click → Open once, or:
+Reviewdeck is signed with a self-signed certificate, not notarised - there is no Apple Developer
+ID behind it - so Gatekeeper will not launch a copy it saw arrive from the internet until the
+quarantine flag is gone. The cask clears it for you; a manual download needs right-click → Open
+once, or:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Reviewdeck.app
@@ -65,7 +66,7 @@ xattr -dr com.apple.quarantine /Applications/Reviewdeck.app
 pnpm install
 pnpm dev            # development, with hot reload
 pnpm build          # typecheck + production bundle
-pnpm dist           # ad-hoc signed .dmg and .zip in release/
+pnpm dist           # signed .dmg and .zip in release/, ad-hoc without the certificate
 pnpm dist:dir       # unpacked .app in release/mac-arm64/
 pnpm test           # unit tests for the diff parser, the markdown pipeline and provider helpers
 pnpm icon           # regenerate resources/icon.icns
