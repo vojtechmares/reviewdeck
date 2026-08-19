@@ -257,6 +257,38 @@ export function visibleReviews(items: ReviewItem[], settings: Settings): ReviewI
   return items.filter((item) => isVisibleReview(item, settings))
 }
 
+/**
+ * The reviews a completed sync should raise a notification about: the ones that
+ * arrived since the last sync and that the deck is going to show.
+ *
+ * The third reading of the same rule, alongside the list and the menu bar count,
+ * and deliberately not a fourth rule of its own. A banner for a review a standing
+ * preference hides opens onto a deck that does not contain it - the app arguing
+ * with itself in front of the user.
+ */
+export function reviewsToAnnounce(
+  items: ReviewItem[],
+  fresh: string[],
+  settings: Settings,
+): ReviewItem[] {
+  const arrived = new Set(fresh)
+  return visibleReviews(items, settings).filter((item) => arrived.has(item.id))
+}
+
+/**
+ * The reviews a completed sync records as having been seen: every one it found,
+ * including the ones no notification will mention.
+ *
+ * Not the same set as what gets announced, and the difference is the point. A
+ * review hidden by a standing preference is one the user has decided they never
+ * want, so it is seen the moment it arrives. Recording only what was announced
+ * would leave months of hidden reviews waiting to fire the day the preference is
+ * turned off.
+ */
+export function idsToRecord(items: ReviewItem[]): string[] {
+  return items.map((item) => item.id)
+}
+
 /** Per-account outcome of a refresh, so the UI can show which host is unhappy. */
 export interface AccountStatus {
   accountId: string

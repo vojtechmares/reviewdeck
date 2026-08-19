@@ -18,6 +18,7 @@ import {
   markSeen,
   persistDeckCache,
 } from './store.ts'
+import { idsToRecord, reviewsToAnnounce } from '@shared/types.ts'
 import type { Account, AccountStatus, DeckState, ReviewItem } from '@shared/types.ts'
 import type { Session } from './providers/types.ts'
 
@@ -208,8 +209,7 @@ class Deck extends EventEmitter {
   }
 
   private announceNew(): void {
-    const ids = this.items().map((item) => item.id)
-    const fresh = markSeen(ids)
+    const fresh = markSeen(idsToRecord(this.items()))
 
     // On the first run after install every item is "new"; do not blast the user.
     if (!this.primed) {
@@ -220,7 +220,7 @@ class Deck extends EventEmitter {
     if (!settings.notificationsEnabled || !fresh.length) return
     if (!Notification.isSupported()) return
 
-    const items = this.items().filter((item) => fresh.includes(item.id))
+    const items = reviewsToAnnounce(this.items(), fresh, settings)
     if (items.length === 1) {
       const [item] = items
       const notification = new Notification({
