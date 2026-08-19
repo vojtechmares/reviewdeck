@@ -270,5 +270,35 @@ export interface DeckState {
   items: ReviewItem[]
   statuses: AccountStatus[]
   syncing: boolean
+  /**
+   * Whether a sync has completed for the accounts currently connected. Distinct
+   * from `lastSyncedAt`, which survives an account being added or removed: a deck
+   * that has never looked at the current set of accounts has nothing to say about
+   * whether they are quiet.
+   */
+  synced: boolean
   lastSyncedAt?: string
+}
+
+/** What the deck pane says in place of review cards. */
+export type DeckEmptyState = 'no-accounts' | 'syncing' | 'no-matches' | 'inbox-zero'
+
+/**
+ * Why the deck pane is showing nothing, or null when it has cards to show.
+ *
+ * Emptiness is not `items.length` - before the first sync lands the deck is empty
+ * because it has not looked yet, which is a very different thing to tell the user
+ * than that nobody is waiting on them.
+ */
+export function deckEmptyState(deck: {
+  accountCount: number
+  synced: boolean
+  visibleCount: number
+  filtersActive: boolean
+}): DeckEmptyState | null {
+  // Nobody with no accounts is waiting on a sync, so this one never waits.
+  if (!deck.accountCount) return 'no-accounts'
+  if (deck.visibleCount) return null
+  if (!deck.synced) return 'syncing'
+  return deck.filtersActive ? 'no-matches' : 'inbox-zero'
 }

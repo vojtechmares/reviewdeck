@@ -10,7 +10,13 @@ import {
   UserRoundPlus,
   X,
 } from 'lucide-react'
-import { isVisibleReview, type CheckStatus, type ReviewItem, type Settings } from '@shared/types'
+import {
+  deckEmptyState,
+  isVisibleReview,
+  type CheckStatus,
+  type ReviewItem,
+  type Settings,
+} from '@shared/types'
 import { cn, relativeTime } from '@/lib/utils'
 import { useApp } from '@/hooks/useApp'
 import { AccountsDialog } from './components/AccountsDialog'
@@ -101,6 +107,12 @@ export function App(): React.JSX.Element {
   const selected = items.find((item) => item.id === selectedId) ?? null
   const failing = deck.statuses.filter((status) => !status.ok)
   const filtersActive = filters.query !== '' || filters.account !== 'all' || filters.checks !== 'all'
+  const empty = deckEmptyState({
+    accountCount: accounts.length,
+    synced: deck.synced,
+    visibleCount: items.length,
+    filtersActive,
+  })
 
   return (
     <div className="flex h-full flex-col">
@@ -225,7 +237,7 @@ export function App(): React.JSX.Element {
               </div>
             )}
 
-            {ready && !accounts.length && (
+            {ready && empty === 'no-accounts' && (
               <Empty
                 icon={<UserRoundPlus className="size-5" />}
                 title="No accounts connected"
@@ -238,17 +250,25 @@ export function App(): React.JSX.Element {
               />
             )}
 
-            {ready && accounts.length > 0 && !items.length && (
+            {ready && empty === 'syncing' && (
+              <Empty
+                icon={<Loader2 className="spin size-5" />}
+                title="Checking for reviews…"
+                body="Asking every connected account what is waiting on you."
+              />
+            )}
+
+            {ready && (empty === 'no-matches' || empty === 'inbox-zero') && (
               <Empty
                 icon={<Inbox className="size-5" />}
-                title={filtersActive ? 'Nothing matches' : 'Inbox zero'}
+                title={empty === 'no-matches' ? 'Nothing matches' : 'Inbox zero'}
                 body={
-                  filtersActive
+                  empty === 'no-matches'
                     ? 'No review requests match the current filters.'
                     : 'Nobody is waiting on a review from you right now.'
                 }
                 action={
-                  filtersActive ? (
+                  empty === 'no-matches' ? (
                     <Button size="sm" onClick={() => setFilters(NO_FILTERS)}>
                       Clear filters
                     </Button>

@@ -25,7 +25,7 @@ interface AppValue {
   accountFor: (id: string) => Account | undefined
 }
 
-const EMPTY_DECK: DeckState = { items: [], statuses: [], syncing: false }
+const EMPTY_DECK: DeckState = { items: [], statuses: [], syncing: false, synced: false }
 
 const AppContext = createContext<AppValue | null>(null)
 

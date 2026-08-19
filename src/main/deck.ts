@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events'
 import { drafts } from './draft-store.ts'
 import { providerFor } from './providers/index.ts'
 import { limitConcurrency } from './providers/types.ts'
-import { DEMO_ITEMS, demoEnabled } from './demo.ts'
+import { DEMO_ACCOUNTS, DEMO_ITEMS, demoEnabled } from './demo.ts'
 import { getSettings, getToken, listAccounts, markSeen } from './store.ts'
 import type { Account, AccountStatus, DeckState, ReviewItem } from '@shared/types.ts'
 import type { Session } from './providers/types.ts'
@@ -19,6 +19,8 @@ class Deck extends EventEmitter {
   private byAccount = new Map<string, ReviewItem[]>()
   private statuses = new Map<string, AccountStatus>()
   private syncing = false
+  /** Signature of the accounts the last completed sync covered, or undefined. */
+  private syncedAccounts: string | undefined
   private lastSyncedAt: string | undefined
   private syncTimer: NodeJS.Timeout | null = null
   private checkTimer: NodeJS.Timeout | null = null
@@ -30,8 +32,20 @@ class Deck extends EventEmitter {
       items: this.items(),
       statuses: [...this.statuses.values()],
       syncing: this.syncing,
+      synced: this.synced(),
       lastSyncedAt: this.lastSyncedAt,
     }
+  }
+
+  /**
+   * Whether the deck has looked at the accounts that are connected right now.
+   *
+   * Connecting or dropping one invalidates the last sync: what it found was about a
+   * different set of accounts, so it says nothing about whether this one is quiet.
+   */
+  private synced(): boolean {
+    if (this.syncedAccounts === undefined) return false
+    return this.syncedAccounts === signatureOf(connectedAccounts())
   }
 
   items(): ReviewItem[] {
@@ -83,6 +97,7 @@ class Deck extends EventEmitter {
 
     if (demoEnabled()) {
       this.byAccount.set('demo', DEMO_ITEMS)
+      this.syncedAccounts = signatureOf(DEMO_ACCOUNTS)
       this.lastSyncedAt = new Date().toISOString()
       this.publish()
       return this.state()
@@ -109,6 +124,9 @@ class Deck extends EventEmitter {
 
     this.reconcileDrafts(submissionsAtStart)
     this.syncing = false
+    // Of the accounts we just fanned out over, not of whatever is connected now -
+    // one added mid-flight was never asked, so the deck cannot claim to know it.
+    this.syncedAccounts = signatureOf(accounts)
     this.lastSyncedAt = new Date().toISOString()
     this.announceNew()
     this.publish()
@@ -263,6 +281,19 @@ class Deck extends EventEmitter {
     }
     this.emit('changed', state)
   }
+}
+
+/** The accounts the app is showing, which in demo mode are the fixtures. */
+function connectedAccounts(): Account[] {
+  return demoEnabled() ? DEMO_ACCOUNTS : listAccounts()
+}
+
+/** A stable identity for a set of accounts, so a change to it can be noticed. */
+function signatureOf(entries: Account[]): string {
+  return entries
+    .map((account) => account.id)
+    .sort()
+    .join(' ')
 }
 
 function focusWindow(): void {
