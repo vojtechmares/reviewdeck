@@ -109,6 +109,16 @@ export function SettingsDialog({
             onChange={(value) => set('hideApproved', value)}
           />
           <Toggle
+            label="Hide draft pull requests"
+            checked={settings.hideDrafts}
+            onChange={(value) => set('hideDrafts', value)}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Drafts the host marks as such, plus anything titled Draft:, WIP: or [WIP] -
+            some hosts have no draft flag at all. The deck says how many it is holding
+            back, and one click shows them.
+          </p>
+          <Toggle
             label="Show the review count in the menu bar"
             checked={settings.showMenuBarCount}
             onChange={(value) => set('showMenuBarCount', value)}

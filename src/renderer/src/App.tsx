@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Filter,
+  GitPullRequestDraft,
   Inbox,
   Loader2,
   RefreshCw,
@@ -39,11 +40,25 @@ export function App(): React.JSX.Element {
   const [showFilters, setShowFilters] = useState(false)
   const [accountsOpen, setAccountsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [revealDrafts, setRevealDrafts] = useState(false)
 
-  const items = useMemo(
+  const shown = useMemo(
     () => applyFilters(deck.items, filters, settings),
     [deck.items, filters, settings],
   )
+  // The same view with the drafts preference lifted, so the deck can say how many
+  // it is holding back and show them when asked. Deliberately renderer-only: the
+  // setting is the standing rule the menu bar counts by, this is a look somebody is
+  // taking by hand, and it belongs with the query box rather than with the rule.
+  const withDrafts = useMemo(
+    () =>
+      settings.hideDrafts
+        ? applyFilters(deck.items, filters, { ...settings, hideDrafts: false })
+        : shown,
+    [deck.items, filters, settings, shown],
+  )
+  const hiddenDrafts = withDrafts.length - shown.length
+  const items = revealDrafts ? withDrafts : shown
 
   // Keep a valid selection as the deck changes underneath us.
   useEffect(() => {
@@ -55,6 +70,12 @@ export function App(): React.JSX.Element {
       setSelectedId(items[0].id)
     }
   }, [items, selectedId])
+
+  // Turning the preference back on is a decision about the deck itself, so it wins
+  // over a reveal somebody left switched on earlier in the session.
+  useEffect(() => {
+    if (settings.hideDrafts) setRevealDrafts(false)
+  }, [settings.hideDrafts])
 
   // Clicking a notification (or the Settings menu item) routes through here.
   useEffect(() => {
@@ -111,6 +132,7 @@ export function App(): React.JSX.Element {
     accountCount: accounts.length,
     synced: deck.synced,
     visibleCount: items.length,
+    hiddenDraftCount: hiddenDrafts,
     filtersActive,
   })
 
@@ -260,6 +282,19 @@ export function App(): React.JSX.Element {
               />
             )}
 
+            {ready && empty === 'only-drafts' && (
+              <Empty
+                icon={<GitPullRequestDraft className="size-5" />}
+                title={hiddenDrafts === 1 ? 'Only a draft waiting' : 'Only drafts waiting'}
+                body={`Nobody is waiting on a finished review, but ${plural(hiddenDrafts, 'draft')} ${hiddenDrafts === 1 ? 'is' : 'are'} hidden by your settings.`}
+                action={
+                  <Button size="sm" onClick={() => setRevealDrafts(true)}>
+                    {hiddenDrafts === 1 ? 'Show it' : 'Show them'}
+                  </Button>
+                }
+              />
+            )}
+
             {ready && (empty === 'no-matches' || empty === 'inbox-zero') && (
               <Empty
                 icon={<Inbox className="size-5" />}
@@ -297,6 +332,14 @@ export function App(): React.JSX.Element {
             <span>
               {items.length} of {deck.items.length} waiting
             </span>
+            {hiddenDrafts > 0 && (
+              <button
+                className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                onClick={() => setRevealDrafts((value) => !value)}
+              >
+                {plural(hiddenDrafts, 'draft')} {revealDrafts ? 'shown' : 'hidden'}
+              </button>
+            )}
             <span className="ml-auto opacity-70">j / k to move</span>
           </footer>
         </aside>
@@ -364,6 +407,10 @@ function Empty({
       {action && <div className="mt-1">{action}</div>}
     </div>
   )
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
 }
 
 function applyFilters(items: ReviewItem[], filters: Filters, settings: Settings): ReviewItem[] {

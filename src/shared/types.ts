@@ -203,6 +203,8 @@ export interface Settings {
   theme: 'system' | 'light' | 'dark'
   /** Hide PRs the user has already approved. */
   hideApproved: boolean
+  /** Hide PRs still being written, by the host's flag or by the title convention. */
+  hideDrafts: boolean
   /** Draw the waiting count beside the menu bar icon. Off leaves the icon alone. */
   showMenuBarCount: boolean
   launchAtLogin: boolean
@@ -224,6 +226,7 @@ export const DEFAULT_SETTINGS: Settings = {
   diffView: 'split',
   theme: 'system',
   hideApproved: false,
+  hideDrafts: true,
   showMenuBarCount: true,
   launchAtLogin: false,
   agentCommand: DEFAULT_AGENT_COMMAND,
@@ -249,7 +252,30 @@ export function mergeSettings(stored: Partial<Settings> | null | undefined): Set
  */
 export function isVisibleReview(item: ReviewItem, settings: Settings): boolean {
   if (settings.hideApproved && item.myReviewState === 'approved') return false
+  if (settings.hideDrafts && isDraftReview(item)) return false
   return true
+}
+
+/** A title that says draft before it says anything else. */
+const DRAFT_TITLE = /^\s*(?:draft:|wip:|\[draft\]|\[wip\])/i
+
+/**
+ * Whether a pull request is still being written rather than waiting on a review.
+ *
+ * Two signals, because no single one covers every host. GitHub has a real draft
+ * flag. GitLab derives its flag from a `Draft:` title prefix and Forgejo derives
+ * its own from `WIP:`, so on those the flag already carries the convention.
+ * Bitbucket Cloud has no draft concept at all, which leaves its flag always false
+ * and the title the only thing there is to go on. The title rule also catches
+ * somebody typing the habit on a host that would not have set the flag for them.
+ *
+ * It has to be a prefix: a pull request about the draft feature is not a draft.
+ * One false positive is accepted knowingly - a pull request genuinely called
+ * "Draft: release notes for 2.0" is hidden with the rest - because the deck says
+ * how many it is holding back, which is what makes that recoverable.
+ */
+export function isDraftReview(item: ReviewItem): boolean {
+  return item.draft || DRAFT_TITLE.test(item.title)
 }
 
 /** The reviews a deck actually shows, which is the number the menu bar carries. */
@@ -313,7 +339,12 @@ export interface DeckState {
 }
 
 /** What the deck pane says in place of review cards. */
-export type DeckEmptyState = 'no-accounts' | 'syncing' | 'no-matches' | 'inbox-zero'
+export type DeckEmptyState =
+  | 'no-accounts'
+  | 'syncing'
+  | 'no-matches'
+  | 'inbox-zero'
+  | 'only-drafts'
 
 /**
  * Why the deck pane is showing nothing, or null when it has cards to show.
@@ -326,11 +357,17 @@ export function deckEmptyState(deck: {
   accountCount: number
   synced: boolean
   visibleCount: number
+  /** Drafts the preference is holding back, already narrowed to the current view. */
+  hiddenDraftCount: number
   filtersActive: boolean
 }): DeckEmptyState | null {
   // Nobody with no accounts is waiting on a sync, so this one never waits.
   if (!deck.accountCount) return 'no-accounts'
   if (deck.visibleCount) return null
   if (!deck.synced) return 'syncing'
+  // Ahead of both of the below, because a deck holding nothing but drafts is
+  // neither at inbox zero nor short of anything matching - it is holding drafts,
+  // and saying so is the only version the user can act on.
+  if (deck.hiddenDraftCount) return 'only-drafts'
   return deck.filtersActive ? 'no-matches' : 'inbox-zero'
 }

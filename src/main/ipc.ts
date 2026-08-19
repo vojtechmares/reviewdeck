@@ -277,7 +277,13 @@ export function registerIpc(): void {
     // The menu bar counts what the deck shows, so a setting that changes what it
     // shows - or whether it shows anything - has to redraw it now rather than at
     // the next background refresh.
-    if (patch.hideApproved !== undefined || patch.showMenuBarCount !== undefined) deck.publish()
+    if (
+      patch.hideApproved !== undefined ||
+      patch.hideDrafts !== undefined ||
+      patch.showMenuBarCount !== undefined
+    ) {
+      deck.publish()
+    }
     // The window's vibrancy and title bar follow the native theme, not the CSS class.
     if (patch.theme !== undefined) nativeTheme.themeSource = patch.theme
     if (patch.launchAtLogin !== undefined) {
