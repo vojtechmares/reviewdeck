@@ -9,3 +9,8 @@ tsconfig.*.tsbuildinfo
 
 # guard against an accidental `npm install`
 package-lock.json
+
+# never commit local credentials
+.env
+.env.*
+!.env.example
