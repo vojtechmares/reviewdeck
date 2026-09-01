@@ -428,7 +428,7 @@ test('gitlabThreads counts a discussion resolved only once every resolvable note
   assert.equal(fully.resolved, true)
 })
 
-test('gitlabThreads refuses replies into a standalone note and resolution where nothing resolves', () => {
+test('gitlabThreads takes a reply into a standalone comment and offers no resolution where nothing resolves', () => {
   const [thread] = gitlabThreads([
     {
       id: 'd3',
@@ -445,9 +445,36 @@ test('gitlabThreads refuses replies into a standalone note and resolution where 
     },
   ])
 
-  assert.equal(thread.canReply, false)
+  // GitLab makes the thread out of the comment on the first reply, so a comment
+  // left on the merge request itself is as answerable as one left on a line.
+  assert.equal(thread.canReply, true)
   assert.equal(thread.canResolve, false)
   assert.equal(thread.resolved, false, 'nothing resolvable must not read as resolved')
+})
+
+test('gitlabThreads folds a discussion handed back on more than one page into one thread', () => {
+  const note = (id: number, body: string, hour: number): {
+    id: number
+    body: string
+    created_at: string
+  } => ({ id, body, created_at: `2026-08-04T0${hour}:00:00Z` })
+
+  const threads = gitlabThreads([
+    { id: 'd7', individual_note: false, notes: [note(1, 'Opening remark.', 8), note(2, 'First reply.', 9)] },
+    { id: 'd8', notes: [note(5, 'Somewhere else entirely.', 8)] },
+    // The next page repeats the discussion and carries the rest of it, including
+    // the note the page boundary fell on.
+    { id: 'd7', individual_note: false, notes: [note(2, 'First reply.', 9), note(3, 'Second reply.', 10)] },
+  ])
+
+  assert.deepEqual(
+    threads.map((thread) => thread.id),
+    ['d7', 'd8'],
+  )
+  assert.deepEqual(
+    threads[0].comments.map((comment) => comment.body),
+    ['Opening remark.', 'First reply.', 'Second reply.'],
+  )
 })
 
 test('gitlabThreads drops system notes and the discussions made only of them', () => {

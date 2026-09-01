@@ -42,7 +42,11 @@ export interface GitlabNote {
 
 export interface GitlabDiscussion {
   id: string
-  /** True for a standalone comment, which GitLab will not accept replies into. */
+  /**
+   * True for a standalone comment. It says nothing about whether a reply can be
+   * sent - GitLab makes the thread out of the comment on the first reply - so
+   * nothing is read off it.
+   */
   individual_note?: boolean
   notes?: GitlabNote[]
 }
@@ -398,9 +402,15 @@ export function bitbucketThreads(comments: BitbucketComment[]): CommentThread[] 
  * GitLab is the host with real threads: a discussion carries its own notes, and
  * both replying and resolving are ordinary REST calls.
  *
- * `individual_note` marks a standalone comment, which GitLab refuses replies into,
- * and only some notes are resolvable at all - so both capabilities are read off the
- * discussion rather than assumed from the host.
+ * Every discussion can be replied into, the comment left on the merge request
+ * itself included. Answering a standalone comment is how GitLab makes a thread out
+ * of one - "this can also create a thread from a single comment" - so the browser
+ * offers the reply and refusing it here was the app inventing a limit the host does
+ * not have. GitLab publishes no per-discussion reply permission, so a merge request
+ * that will not take the note says so when the reply is sent.
+ *
+ * Resolution is a different matter: only some notes are resolvable at all, so that
+ * capability is still read off the discussion.
  *
  * @param headSha the merge request's current head, to spot a thread left against a
  *   version of the diff that has since moved on.
@@ -411,7 +421,7 @@ export function gitlabThreads(
 ): CommentThread[] {
   const threads: CommentThread[] = []
 
-  for (const discussion of discussions) {
+  for (const discussion of foldDiscussionPages(discussions)) {
     // System notes are the "changed the description" chatter, not conversation.
     const notes = (discussion.notes ?? []).filter((note) => !note.system)
     if (!notes.length) continue
@@ -436,10 +446,40 @@ export function gitlabThreads(
       path: position ? (position.new_path ?? position.old_path) : undefined,
       line: line ?? undefined,
       side: position?.new_line ? 'new' : position?.old_line ? 'old' : undefined,
-      canReply: discussion.individual_note !== true,
+      canReply: true,
       canResolve: resolvable.length > 0,
     })
   }
 
   return threads
+}
+
+/**
+ * Discussions arrive a page at a time, and a long one can come back on more than
+ * one page - the same id twice, each copy carrying part of the conversation.
+ *
+ * Left alone that reads as a thread whose later replies simply are not there,
+ * which is indistinguishable from nobody having written them. So the pages are
+ * folded back into one discussion first, keeping the order they arrived in - which
+ * is the order they were written - and a note both pages carried is kept once.
+ */
+function foldDiscussionPages(discussions: GitlabDiscussion[]): GitlabDiscussion[] {
+  const folded = new Map<string, GitlabDiscussion & { notes: GitlabNote[] }>()
+
+  for (const discussion of discussions) {
+    const existing = folded.get(discussion.id)
+    if (!existing) {
+      folded.set(discussion.id, { ...discussion, notes: [...(discussion.notes ?? [])] })
+      continue
+    }
+
+    const seen = new Set(existing.notes.map((note) => note.id))
+    for (const note of discussion.notes ?? []) {
+      if (seen.has(note.id)) continue
+      seen.add(note.id)
+      existing.notes.push(note)
+    }
+  }
+
+  return [...folded.values()]
 }
