@@ -22,6 +22,7 @@ import { PROVIDER_LABELS } from '@shared/types.ts'
 import type {
   Account,
   AccountDraft,
+  CommentThread,
   DraftComment,
   PullDetail,
   ReviewSubmission,
@@ -121,6 +122,22 @@ export function registerIpc(): void {
         changedFiles: detail.item.changedFiles,
       })
       return detail
+    } catch (error) {
+      fail(error)
+    }
+  })
+
+  /**
+   * The conversation alone, for the poll behind an open pull request. Re-reading the
+   * whole detail on every sync would fetch the diff again for nothing.
+   */
+  ipcMain.handle('pull:threads', async (_event, itemId: string): Promise<CommentThread[]> => {
+    try {
+      const item = deck.find(itemId)
+      if (!item) throw new Error('That pull request is no longer in the deck.')
+      if (demoEnabled()) return demoDetail(item).threads
+      const provider = providerFor(item.provider)
+      return await provider.loadThreads(deck.session(item.accountId), item)
     } catch (error) {
       fail(error)
     }

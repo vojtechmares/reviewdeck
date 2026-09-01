@@ -394,7 +394,7 @@ export const github: Provider = {
         { headers: headers(session), signal },
         4,
       ),
-      loadThreads(session, item, signal),
+      fetchThreads(session, item, signal),
     ])
 
     const files: DiffFile[] = rawFiles.map((file) => ({
@@ -448,6 +448,10 @@ export const github: Provider = {
     return loadChecks(session, item.repoKey, pull.head.sha, signal)
   },
 
+  async loadThreads(session, item, signal) {
+    return fetchThreads(session, item, signal)
+  },
+
   async submitReview(session, item, verdict, body, comments) {
     const event =
       verdict === 'approve' ? 'APPROVE' : verdict === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT'
@@ -498,7 +502,7 @@ export const github: Provider = {
  * turns away - falls back to the flat REST shape, which is what the app showed
  * before. Losing the thread structure is much better than losing the comments.
  */
-async function loadThreads(
+async function fetchThreads(
   session: Session,
   item: ReviewItem,
   signal?: AbortSignal,

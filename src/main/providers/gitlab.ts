@@ -5,7 +5,7 @@
  * for us, which is the one thing GitLab makes easier than everyone else.
  */
 
-import { request, toOrigin } from '../http.ts'
+import { paginate, request, toOrigin } from '../http.ts'
 import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
 import { gitlabThreads, type GitlabDiscussion } from './threads.ts'
 import { gitlabDiscussionPayload, submitSequentially } from './submit.ts'
@@ -257,10 +257,7 @@ export const gitlab: Provider = {
         api(session, `/projects/${project(item)}/merge_requests/${item.number}/versions`),
         { headers: headers(session), signal },
       ).catch(() => [] as GlVersion[]),
-      request<GitlabDiscussion[]>(
-        api(session, `/projects/${project(item)}/merge_requests/${item.number}/discussions?per_page=100`),
-        { headers: headers(session), signal },
-      ).catch(() => [] as GitlabDiscussion[]),
+      loadDiscussions(session, item, signal),
     ])
 
     const rawDiffs = changes.changes ?? changes.diffs ?? []
@@ -299,6 +296,19 @@ export const gitlab: Provider = {
 
   async refreshChecks(session, item, signal) {
     return loadChecks(session, item.repoKey, item.number, signal)
+  },
+
+  async loadThreads(session, item, signal) {
+    // The versions come along because a thread left against an older diff is only
+    // recognisable next to the head it was written on.
+    const [versions, discussions] = await Promise.all([
+      request<GlVersion[]>(
+        api(session, `/projects/${project(item)}/merge_requests/${item.number}/versions`),
+        { headers: headers(session), signal },
+      ).catch(() => [] as GlVersion[]),
+      loadDiscussions(session, item, signal),
+    ])
+    return gitlabThreads(discussions, versions[0]?.head_commit_sha)
   },
 
   async submitReview(session, item, verdict, body, comments) {
@@ -372,6 +382,24 @@ export const gitlab: Provider = {
       refs,
     })
   },
+}
+
+/**
+ * Every page of the conversation. GitLab hands it over a page at a time, and a merge
+ * request argued over for a few weeks runs past the first one - so reading only that
+ * page drops whole threads and the replies inside them, which looks from here
+ * exactly like nobody having written them.
+ */
+function loadDiscussions(
+  session: Session,
+  item: ReviewItem,
+  signal?: AbortSignal,
+): Promise<GitlabDiscussion[]> {
+  return paginate<GitlabDiscussion>(
+    api(session, `/projects/${project(item)}/merge_requests/${item.number}/discussions?per_page=100`),
+    { headers: headers(session), signal },
+    5,
+  ).catch(() => [] as GitlabDiscussion[])
 }
 
 /** One comment, placed by the three shas the draft recorded. */

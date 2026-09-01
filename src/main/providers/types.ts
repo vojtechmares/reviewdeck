@@ -2,6 +2,7 @@ import type {
   Account,
   AccountDraft,
   CheckStatus,
+  CommentThread,
   DraftComment,
   LineCommentDraft,
   PullDetail,
@@ -25,6 +26,14 @@ export interface Provider {
   loadDetail(session: Session, item: ReviewItem, signal?: AbortSignal): Promise<PullDetail>
   /** Re-read just the CI status, for the running-checks poll. */
   refreshChecks(session: Session, item: ReviewItem, signal?: AbortSignal): Promise<ReviewItem['checks']>
+  /**
+   * Re-read just the conversation, for the poll behind an open pull request.
+   *
+   * The diff is the expensive half of `loadDetail` - a merge request in a monorepo
+   * is megabytes of it - and none of it moves when someone answers a thread. So a
+   * reply arriving while the diff is being read costs the comments and nothing else.
+   */
+  loadThreads(session: Session, item: ReviewItem, signal?: AbortSignal): Promise<CommentThread[]>
   /**
    * Submit a review. `comments` are the drafts written against this pull request,
    * which each adapter maps onto its host's batch call where one exists and onto

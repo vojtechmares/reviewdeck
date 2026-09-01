@@ -21,6 +21,7 @@ import type {
   CheckRun,
   CheckStatus,
   CheckSummary,
+  CommentThread,
   MyReviewState,
   ReviewItem,
 } from '@shared/types.ts'
@@ -248,7 +249,7 @@ export const forgejo: Provider = {
   },
 
   async loadDetail(session, item, signal) {
-    const [pull, diff, comments, reviewComments] = await Promise.all([
+    const [pull, diff, threads] = await Promise.all([
       request<FjPull>(api(session, `/repos/${item.repoKey}/pulls/${item.number}`), {
         headers: headers(session),
         signal,
@@ -258,11 +259,7 @@ export const forgejo: Provider = {
         raw: true,
         signal,
       }).catch(() => ''),
-      request<ForgejoComment[]>(api(session, `/repos/${item.repoKey}/issues/${item.number}/comments`), {
-        headers: headers(session),
-        signal,
-      }).catch(() => [] as ForgejoComment[]),
-      loadReviewComments(session, item, signal),
+      fetchThreads(session, item, signal),
     ])
 
     const files = parseUnifiedDiff(diff)
@@ -280,7 +277,7 @@ export const forgejo: Provider = {
       },
       description: pull.body ?? '',
       files,
-      threads: forgejoThreads(comments, reviewComments),
+      threads,
       refs: { headSha: pull.head.sha, baseSha: pull.base.sha },
     }
   },
@@ -291,6 +288,10 @@ export const forgejo: Provider = {
       signal,
     })
     return loadChecks(session, item.repoKey, pull.head.sha, signal)
+  },
+
+  async loadThreads(session, item, signal) {
+    return fetchThreads(session, item, signal)
   },
 
   async submitReview(session, item, verdict, body, comments) {
@@ -369,6 +370,25 @@ async function inlineComment(
 interface FjReview {
   id: number
   comments_count?: number
+}
+
+/**
+ * The whole conversation: the comments on the pull request and the inline ones,
+ * which live in different places here and become one set of threads.
+ */
+async function fetchThreads(
+  session: Session,
+  item: ReviewItem,
+  signal?: AbortSignal,
+): Promise<CommentThread[]> {
+  const [comments, reviewComments] = await Promise.all([
+    request<ForgejoComment[]>(api(session, `/repos/${item.repoKey}/issues/${item.number}/comments`), {
+      headers: headers(session),
+      signal,
+    }).catch(() => [] as ForgejoComment[]),
+    loadReviewComments(session, item, signal),
+  ])
+  return forgejoThreads(comments, reviewComments)
 }
 
 /**

@@ -18,6 +18,7 @@ import type {
   CheckRun,
   CheckStatus,
   CheckSummary,
+  CommentThread,
   DraftComment,
   MyReviewState,
   ReviewItem,
@@ -110,6 +111,21 @@ function statusState(state: string): CheckStatus {
 }
 
 /** Walk Bitbucket's `next`-URL pagination, bounded by `max` items. */
+/** The whole conversation, which Bitbucket keeps as one flat list of comments. */
+async function fetchThreads(
+  session: Session,
+  item: ReviewItem,
+  signal?: AbortSignal,
+): Promise<CommentThread[]> {
+  const comments = await collect<BitbucketComment>(
+    `${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}/comments?pagelen=50`,
+    session,
+    100,
+    signal,
+  ).catch(() => [] as BitbucketComment[])
+  return bitbucketThreads(comments)
+}
+
 async function collect<T>(url: string, session: Session, max: number, signal?: AbortSignal): Promise<T[]> {
   const out: T[] = []
   let next: string | undefined = url
@@ -244,7 +260,7 @@ export const bitbucket: Provider = {
   },
 
   async loadDetail(session, item, signal) {
-    const [pr, diff, comments] = await Promise.all([
+    const [pr, diff, threads] = await Promise.all([
       request<BbPullRequest>(`${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}`, {
         headers: headers(session),
         signal,
@@ -254,12 +270,7 @@ export const bitbucket: Provider = {
         raw: true,
         signal,
       }).catch(() => ''),
-      collect<BitbucketComment>(
-        `${API_ROOT}/repositories/${item.repoKey}/pullrequests/${item.number}/comments?pagelen=50`,
-        session,
-        100,
-        signal,
-      ).catch(() => [] as BitbucketComment[]),
+      fetchThreads(session, item, signal),
     ])
 
     const files = parseUnifiedDiff(diff)
@@ -272,13 +283,17 @@ export const bitbucket: Provider = {
       item: { ...item, additions: totals.a, deletions: totals.d, changedFiles: files.length },
       description: pr.description ?? '',
       files,
-      threads: bitbucketThreads(comments),
+      threads,
       refs: { headSha: pr.source?.commit?.hash, baseSha: pr.destination?.commit?.hash },
     }
   },
 
   async refreshChecks(session, item, signal) {
     return loadChecks(session, item.repoKey, item.number, signal)
+  },
+
+  async loadThreads(session, item, signal) {
+    return fetchThreads(session, item, signal)
   },
 
   async submitReview(session, item, verdict, body, comments) {

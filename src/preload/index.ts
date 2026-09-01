@@ -7,6 +7,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   Account,
   AccountDraft,
+  CommentThread,
   DeckState,
   DraftComment,
   PullDetail,
@@ -43,6 +44,8 @@ const api = {
   },
   pull: {
     detail: (itemId: string): Promise<PullDetail> => ipcRenderer.invoke('pull:detail', itemId),
+    threads: (itemId: string): Promise<CommentThread[]> =>
+      ipcRenderer.invoke('pull:threads', itemId),
     review: (submission: ReviewSubmission): Promise<void> =>
       ipcRenderer.invoke('pull:review', submission),
     comment: (itemId: string, body: string): Promise<void> =>
