@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
   ClipboardCopy,
@@ -23,6 +23,7 @@ import type {
 import { agentCommand } from '@shared/agent-prompt'
 import { repositoryRoot } from '@shared/autolink'
 import { headMoved } from '@shared/drafts'
+import { sameConversation } from '@shared/threads'
 import { cn, relativeTime } from '@/lib/utils'
 import { errorMessage, useApp } from '@/hooks/useApp'
 import { Avatar } from './ui/avatar'
@@ -59,6 +60,13 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
   const [diverged, setDiverged] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
 
+  /**
+   * The sync the conversation on screen was read at. A fresh load already answers
+   * for the sync that was current when the pull request was opened, so only a later
+   * one is worth another request.
+   */
+  const conversationAt = useRef('')
+
   // Reload whenever the selection changes; a stale diff would be worse than a spinner.
   useEffect(() => {
     let cancelled = false
@@ -77,6 +85,9 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
       if (!cancelled) setDrafts(pending)
     })
 
+    // What this load answers for, so the refresh below only follows a later sync.
+    conversationAt.current = deck.lastSyncedAt ?? ''
+
     void window.reviewdeck.pull
       .detail(item.id)
       .then((loaded) => {
@@ -93,6 +104,43 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
       cancelled = true
     }
   }, [item.id])
+
+  /**
+   * A conversation moves while the diff is being read: someone answers a thread, or
+   * resolves one. This is a menu bar app left running for days, so a pull request
+   * opened yesterday would otherwise still be showing yesterday's replies - which
+   * reads as the reply never arriving rather than as a stale view.
+   *
+   * The deck's sync is when the app learns anything at all, so the conversation is
+   * re-read on the back of it. Only the conversation: the diff a reviewer is halfway
+   * through stays exactly as they found it, which is what the push dialog below
+   * exists to protect.
+   */
+  useEffect(() => {
+    const syncedAt = deck.lastSyncedAt ?? ''
+    if (!syncedAt || syncedAt === conversationAt.current) return
+    conversationAt.current = syncedAt
+
+    let cancelled = false
+    void window.reviewdeck.pull
+      .threads(item.id)
+      .then((threads) => {
+        if (cancelled) return
+        setDetail((current) => {
+          // A sync that found nothing new leaves the view untouched, or the diff
+          // rebuilds under whoever is reading it.
+          if (!current || sameConversation(current.threads, threads)) return current
+          return { ...current, threads }
+        })
+      })
+      // Nothing is said about a refresh that failed: what is on screen is still
+      // true, and the next sync will try again.
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [deck.lastSyncedAt, item.id])
 
   /**
    * Threads the diff can actually show, and everything else.
