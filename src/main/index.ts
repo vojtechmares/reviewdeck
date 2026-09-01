@@ -4,6 +4,7 @@ import { deck } from './deck.ts'
 import { registerImageScheme, serveImages } from './images.ts'
 import { flushDrafts, registerIpc } from './ipc.ts'
 import { getSettings, listAccounts } from './store.ts'
+import { TRAY_ICON_POINTS, trayIconPng } from './tray-icon.ts'
 import { visibleReviews } from '@shared/types.ts'
 import { quietUntil } from '@shared/review-window.ts'
 
@@ -73,21 +74,19 @@ function show(): void {
   mainWindow.focus()
 }
 
-/** A 16pt template icon drawn as a monochrome SVG, so it adapts to the menu bar theme. */
+/**
+ * A 16pt template icon, so it adapts to the menu bar theme.
+ *
+ * Both scale factors are attached rather than one image resized: the glyph is
+ * drawn to fit whole pixels at each size, and letting macOS scale a 16px bitmap
+ * onto a Retina menu bar would throw that away.
+ */
 function trayIcon(): Electron.NativeImage {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-    <g fill="black">
-      <rect x="4" y="7" width="24" height="4" rx="2"/>
-      <rect x="4" y="14" width="18" height="4" rx="2"/>
-      <rect x="4" y="21" width="12" height="4" rx="2"/>
-    </g>
-  </svg>`
-  const image = nativeImage.createFromDataURL(
-    `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`,
-  )
-  const resized = image.resize({ width: 16, height: 16 })
-  resized.setTemplateImage(true)
-  return resized
+  const image = nativeImage.createEmpty()
+  image.addRepresentation({ scaleFactor: 1, buffer: trayIconPng(TRAY_ICON_POINTS) })
+  image.addRepresentation({ scaleFactor: 2, buffer: trayIconPng(TRAY_ICON_POINTS * 2) })
+  image.setTemplateImage(true)
+  return image
 }
 
 function createTray(): void {
@@ -113,8 +112,9 @@ function createTray(): void {
           new Date(),
         )
       : null
-    // Empty rather than a space when the count is off, so the icon sits where it
-    // would if nothing were ever drawn beside it. The context menu still counts.
+    // Empty rather than a space when the count is off, or when nothing is
+    // waiting: the icon alone is the resting state, and it sits where it would
+    // if nothing were ever drawn beside it. The context menu still counts.
     tray?.setTitle(settings.showMenuBarCount && waiting.length ? ` ${waiting.length}` : '')
     tray?.setContextMenu(
       Menu.buildFromTemplate([
