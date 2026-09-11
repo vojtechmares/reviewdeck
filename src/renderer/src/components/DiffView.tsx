@@ -1,6 +1,13 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { ChevronRight, FilePlus2, FileMinus2, FileSymlink, MessageSquarePlus, Plus } from 'lucide-react'
-import { parsePatch, toSplitRows, type DiffHunk, type DiffLine } from '@shared/diff'
+import {
+  commentTargets,
+  parsePatch,
+  toSplitRows,
+  type CommentTarget,
+  type DiffHunk,
+  type DiffLine,
+} from '@shared/diff'
 import { languageFor } from '@shared/highlight'
 import type { CommentThread, DiffFile, DraftComment, LineCommentDraft } from '@shared/types'
 import { highlightHunks, type Token } from '@/lib/highlight'
@@ -33,12 +40,6 @@ const ESTIMATED_HUNK_HEADER_HEIGHT = 27
 /** Shared so a file without threads or drafts keeps the same array across renders. */
 const NO_THREADS: CommentThread[] = []
 const NO_DRAFTS: DraftComment[] = []
-
-export interface CommentTarget {
-  path: string
-  newLine?: number
-  oldLine?: number
-}
 
 interface DiffViewProps {
   files: DiffFile[]
@@ -399,12 +400,14 @@ function UnifiedHunks({
                 (thread) => thread.line === (line.newLine ?? line.oldLine),
               )
               const isTarget = target !== null && sameLine(target, line)
+              const onOld = sideTarget(path, line, 'old')
+              const onNew = sideTarget(path, line, 'new')
 
               return (
                 <Fragment key={lineIndex}>
                   <tr className={cn('group', CELL_BG[line.kind])}>
-                    <Gutter value={line.oldLine} onAdd={() => setTarget(targetFor(path, line))} />
-                    <Gutter value={line.newLine} />
+                    <Gutter value={line.oldLine} onAdd={onOld && (() => setTarget(onOld))} />
+                    <Gutter value={line.newLine} onAdd={onNew && (() => setTarget(onNew))} />
                     <Code line={line} tokens={tokens?.get(line)} />
                   </tr>
                   {attached.map((thread) => (
@@ -491,6 +494,8 @@ function SplitHunks({
               )
               const activeSide =
                 target && ((right && target.newLine === right.newLine) || (left && target.oldLine === left.oldLine))
+              const onLeft = left && sideTarget(path, left, 'old')
+              const onRight = right && sideTarget(path, right, 'new')
 
               return (
                 <Fragment key={rowIndex}>
@@ -498,13 +503,13 @@ function SplitHunks({
                     <Gutter
                       value={left?.oldLine}
                       className={left && !paired ? 'bg-[var(--diff-del)]' : ''}
-                      onAdd={left ? () => setTarget(targetFor(path, left, 'old')) : undefined}
+                      onAdd={onLeft && (() => setTarget(onLeft))}
                     />
                     <Code line={left} tokens={left ? tokens?.get(left) : undefined} />
                     <Gutter
                       value={right?.newLine}
                       className={right && !paired ? 'bg-[var(--diff-add)]' : ''}
-                      onAdd={right ? () => setTarget(targetFor(path, right, 'new')) : undefined}
+                      onAdd={onRight && (() => setTarget(onRight))}
                     />
                     <Code line={right} tokens={right ? tokens?.get(right) : undefined} />
                   </tr>
@@ -677,16 +682,11 @@ function Composer({
   )
 }
 
-/**
- * GitHub/GitLab both want "which side of the diff" expressed as which line
- * number is present: added lines carry only a new line, removed only an old one.
- */
-function targetFor(path: string, line: DiffLine, prefer?: 'old' | 'new'): CommentTarget {
-  if (line.kind === 'add') return { path, newLine: line.newLine }
-  if (line.kind === 'del') return { path, oldLine: line.oldLine }
-  // Context lines exist on both sides; use whichever column was clicked.
-  if (prefer === 'old') return { path, oldLine: line.oldLine }
-  return { path, newLine: line.newLine }
+/** The comment this line takes from one gutter, or nothing when it has no line there. */
+function sideTarget(path: string, line: DiffLine, side: 'old' | 'new'): CommentTarget | undefined {
+  return commentTargets(path, line).find((target) =>
+    side === 'old' ? target.oldLine !== undefined : target.newLine !== undefined,
+  )
 }
 
 /** Does an open composer belong to this exact line? */

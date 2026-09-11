@@ -208,3 +208,24 @@ export function toSplitRows(hunk: DiffHunk): SplitRow[] {
   flush()
   return rows
 }
+
+/** Where a line comment lands: the file, and the line on whichever side it is on. */
+export interface CommentTarget {
+  path: string
+  newLine?: number
+  oldLine?: number
+}
+
+/**
+ * The comments a diff line can take, one per side it exists on.
+ *
+ * Every host addresses a line by which side's number is given: an added line
+ * carries only a new line number, a removed line only an old one, and a context
+ * line has both - so it can be commented on from either side.
+ */
+export function commentTargets(path: string, line: DiffLine): CommentTarget[] {
+  if (line.kind === 'add') return [{ path, newLine: line.newLine }]
+  if (line.kind === 'del') return [{ path, oldLine: line.oldLine }]
+  if (line.kind === 'context') return [{ path, oldLine: line.oldLine }, { path, newLine: line.newLine }]
+  return []
+}
