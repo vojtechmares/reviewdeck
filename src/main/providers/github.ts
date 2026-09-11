@@ -21,7 +21,7 @@ import {
   type GithubGqlComment,
   type GithubReviewThread,
 } from './threads.ts'
-import { githubReviewComments } from './submit.ts'
+import { githubCommentPosition, githubReviewComments } from './submit.ts'
 import type {
   Account,
   AccountDraft,
@@ -186,7 +186,9 @@ query Threads($owner: String!, $name: String!, $number: Int!) {
           isOutdated
           path
           line
+          startLine
           diffSide
+          startDiffSide
           viewerCanReply
           viewerCanResolve
           viewerCanUnresolve
@@ -536,14 +538,7 @@ export const github: Provider = {
     await request(api(session, `/repos/${item.repoKey}/pulls/${item.number}/comments`), {
       method: 'POST',
       headers: headers(session),
-      body: {
-        body: draft.body,
-        commit_id: refs.headSha,
-        path: draft.path,
-        // GitHub addresses a line by side: RIGHT for the post-change file, LEFT for pre-change.
-        side: draft.newLine ? 'RIGHT' : 'LEFT',
-        line: draft.newLine ?? draft.oldLine,
-      },
+      body: { commit_id: refs.headSha, ...githubCommentPosition(draft) },
     })
   },
 }

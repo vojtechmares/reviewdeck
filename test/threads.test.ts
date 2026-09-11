@@ -668,3 +668,193 @@ test('githubThreads drops a thread whose comments have all gone', () => {
   )
   assert.equal(threads[0].comments.length, 1)
 })
+
+// --- ranges ---
+
+test('githubFlatThreads reads where a range starts, and only on the side it ends on', () => {
+  const [same, crossed, outdated] = githubFlatThreads(
+    [],
+    [
+      {
+        id: 40,
+        body: 'These three.',
+        created_at: '2026-08-01T09:00:00Z',
+        path: 'a.ts',
+        line: 12,
+        side: 'RIGHT',
+        start_line: 10,
+        start_side: 'RIGHT',
+      },
+      {
+        id: 41,
+        body: 'From the old side over to the new.',
+        created_at: '2026-08-01T09:01:00Z',
+        path: 'a.ts',
+        line: 12,
+        side: 'RIGHT',
+        start_line: 10,
+        start_side: 'LEFT',
+      },
+      {
+        id: 42,
+        body: 'Written against an older diff.',
+        created_at: '2026-08-01T09:02:00Z',
+        path: 'a.ts',
+        line: null,
+        original_line: 30,
+        side: 'LEFT',
+        start_line: null,
+        original_start_line: 28,
+        start_side: 'LEFT',
+      },
+    ],
+  )
+
+  assert.equal(same.line, 12)
+  assert.equal(same.startLine, 10)
+  // A range the app cannot draw keeps its last line and nothing more.
+  assert.equal(crossed.line, 12)
+  assert.equal(crossed.startLine, undefined)
+  assert.equal(outdated.line, 30)
+  assert.equal(outdated.startLine, 28)
+})
+
+test('githubThreads reads where a review thread starts and forgets it once outdated', () => {
+  const base = {
+    path: 'a.ts',
+    line: 12,
+    diffSide: 'RIGHT',
+    startLine: 10,
+    startDiffSide: 'RIGHT',
+    viewerCanReply: true,
+    comments: { nodes: [gqlComment('C_9', 'These three.')] },
+  }
+  const [live, crossed, outdated] = githubThreads(
+    [
+      { ...base, id: 'RT_9' },
+      { ...base, id: 'RT_10', startDiffSide: 'LEFT' },
+      { ...base, id: 'RT_11', isOutdated: true },
+    ],
+    [],
+  )
+
+  assert.equal(live.startLine, 10)
+  assert.equal(crossed.startLine, undefined)
+  assert.equal(outdated.line, undefined)
+  assert.equal(outdated.startLine, undefined)
+})
+
+test('forgejoThreads shows a range on its last line and keys it by its first', () => {
+  const [thread] = forgejoThreads(
+    [],
+    [
+      {
+        id: 50,
+        body: 'These three.',
+        created_at: '2026-08-02T09:00:00Z',
+        path: 'a.ts',
+        position: 10,
+        original_position: 0,
+        extra_lines_count: 2,
+      },
+      {
+        id: 51,
+        body: 'A reply, at the same position.',
+        created_at: '2026-08-02T10:00:00Z',
+        path: 'a.ts',
+        position: 10,
+        original_position: 0,
+      },
+    ],
+  )
+
+  assert.equal(thread.comments.length, 2)
+  assert.equal(thread.line, 12)
+  assert.equal(thread.startLine, 10)
+  // A reply is aimed at the position the host groups on, which is the first line.
+  assert.equal(thread.id, forgejoThreadId('a.ts', 'new', 10))
+})
+
+test('forgejoThreads leaves a single-line conversation without a start', () => {
+  const [thread] = forgejoThreads(
+    [],
+    [
+      {
+        id: 52,
+        body: 'Just this one.',
+        created_at: '2026-08-02T09:00:00Z',
+        path: 'a.ts',
+        position: 0,
+        original_position: 7,
+        extra_lines_count: 0,
+      },
+    ],
+  )
+  assert.equal(thread.line, 7)
+  assert.equal(thread.side, 'old')
+  assert.equal(thread.startLine, undefined)
+})
+
+test('bitbucketThreads reads where a range starts on either side', () => {
+  const [onNew, onOld] = bitbucketThreads([
+    {
+      id: 60,
+      content: { raw: 'These three.' },
+      created_on: '2026-08-03T08:00:00Z',
+      inline: { path: 'a.ts', to: 12, start_to: 10 },
+    },
+    {
+      id: 61,
+      content: { raw: 'Those two.' },
+      created_on: '2026-08-03T09:00:00Z',
+      inline: { path: 'a.ts', from: 12, start_from: 11 },
+    },
+  ])
+
+  assert.equal(onNew.line, 12)
+  assert.equal(onNew.startLine, 10)
+  assert.equal(onNew.side, 'new')
+  assert.equal(onOld.line, 12)
+  assert.equal(onOld.startLine, 11)
+  assert.equal(onOld.side, 'old')
+})
+
+test('gitlabThreads reads where a range starts, on the side the note is on', () => {
+  const note = (id: number, position: NonNullable<Parameters<typeof gitlabThreads>[0][0]['notes']>[0]['position']) => ({
+    id: String(id),
+    notes: [
+      {
+        id,
+        body: 'These lines.',
+        created_at: '2026-08-04T08:00:00Z',
+        resolvable: true,
+        position,
+      },
+    ],
+  })
+  const [onNew, onOld, crossed] = gitlabThreads([
+    note(70, {
+      new_path: 'a.ts',
+      new_line: 12,
+      line_range: { start: { old_line: 10, new_line: 10 }, end: { new_line: 12 } },
+    }),
+    note(71, {
+      new_path: 'a.ts',
+      old_line: 12,
+      line_range: { start: { old_line: 11 }, end: { old_line: 12, new_line: 13 } },
+    }),
+    note(72, {
+      new_path: 'a.ts',
+      new_line: 12,
+      // Drawn in the browser from a removed line, which has no new number.
+      line_range: { start: { old_line: 11 }, end: { new_line: 12 } },
+    }),
+  ])
+
+  assert.equal(onNew.line, 12)
+  assert.equal(onNew.startLine, 10)
+  assert.equal(onOld.line, 12)
+  assert.equal(onOld.side, 'old')
+  assert.equal(onOld.startLine, 11)
+  assert.equal(crossed.startLine, undefined)
+})

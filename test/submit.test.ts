@@ -1,14 +1,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import {
   bitbucketCommentPayload,
+  forgejoInlineComment,
   forgejoReviewPayload,
   githubReviewComments,
   gitlabDiscussionPayload,
+  gitlabLineCode,
   PartialSubmitError,
   submitSequentially,
 } from '../src/main/providers/submit.ts'
-import type { DraftComment } from '../src/shared/types.ts'
+import type { DraftComment, LineRange } from '../src/shared/types.ts'
 
 const REFS = { baseSha: 'base1', startSha: 'start1', headSha: 'head1' }
 
@@ -234,4 +237,130 @@ test('a long partial failure names a few and counts the rest', async () => {
 
   assert.match(failure.message, /Posted 6 of 9 comments/)
   assert.match(failure.message, /and 2 more/)
+})
+
+// --- ranges ---
+
+/** Lines 10 to 12 on the new side: a context line, then two added ones. */
+const NEW_RANGE: LineRange = {
+  startLine: 10,
+  start: { kind: 'context', oldPos: 10, newPos: 10 },
+  end: { kind: 'add', oldPos: 11, newPos: 12 },
+}
+
+/** Lines 11 to 12 on the old side: a removed line, then a context one. */
+const OLD_RANGE: LineRange = {
+  startLine: 11,
+  start: { kind: 'del', oldPos: 11, newPos: 11 },
+  end: { kind: 'context', oldPos: 12, newPos: 13 },
+}
+
+test('githubCommentPosition names the start of a range on the same side', () => {
+  assert.deepEqual(githubReviewComments([draft({ newLine: 12, range: NEW_RANGE })]), [
+    { path: 'src/a.ts', body: 'a remark', side: 'RIGHT', line: 12, start_side: 'RIGHT', start_line: 10 },
+  ])
+  assert.deepEqual(
+    githubReviewComments([draft({ newLine: undefined, oldLine: 12, range: OLD_RANGE })]),
+    [{ path: 'src/a.ts', body: 'a remark', side: 'LEFT', line: 12, start_side: 'LEFT', start_line: 11 }],
+  )
+})
+
+test('forgejoInlineComment anchors a range at its first line and counts the rest', () => {
+  assert.deepEqual(forgejoInlineComment(draft({ newLine: 12, range: NEW_RANGE })), {
+    path: 'src/a.ts',
+    body: 'a remark',
+    new_position: 10,
+    old_position: 0,
+    extra_lines_count: 2,
+  })
+  assert.deepEqual(forgejoInlineComment(draft({ newLine: undefined, oldLine: 12, range: OLD_RANGE })), {
+    path: 'src/a.ts',
+    body: 'a remark',
+    new_position: 0,
+    old_position: 11,
+    extra_lines_count: 1,
+  })
+  // A single line says nothing about a count, so an older host sees the same request as before.
+  assert.deepEqual(forgejoInlineComment(draft()), {
+    path: 'src/a.ts',
+    body: 'a remark',
+    new_position: 12,
+    old_position: 0,
+  })
+})
+
+test('gitlabLineCode hashes the path and names both positions, old first', () => {
+  assert.equal(
+    gitlabLineCode('src/a.ts', { kind: 'add', oldPos: 11, newPos: 12 }),
+    `${sha1('src/a.ts')}_11_12`,
+  )
+})
+
+/** Kept independent of the module under test, so the test says what the code is. */
+function sha1(text: string): string {
+  return createHash('sha1').update(text).digest('hex')
+}
+
+test('gitlabDiscussionPayload adds a line range keyed by line codes, typed as the browser types them', () => {
+  const payload = gitlabDiscussionPayload(draft({ newLine: 12, range: NEW_RANGE })) as {
+    position: { line_range: unknown; new_line: number }
+  }
+  assert.equal(payload.position.new_line, 12)
+  assert.deepEqual(payload.position.line_range, {
+    start: {
+      line_code: `${sha1('src/a.ts')}_10_10`,
+      // An unchanged line is neither side's, so it has no type.
+      type: undefined,
+      old_line: 10,
+      new_line: 10,
+    },
+    end: {
+      line_code: `${sha1('src/a.ts')}_11_12`,
+      type: 'new',
+      old_line: undefined,
+      new_line: 12,
+    },
+  })
+
+  const old = gitlabDiscussionPayload(draft({ newLine: undefined, oldLine: 12, range: OLD_RANGE })) as {
+    position: { line_range: { start: Record<string, unknown> } }
+  }
+  assert.deepEqual(old.position.line_range.start, {
+    line_code: `${sha1('src/a.ts')}_11_11`,
+    type: 'old',
+    old_line: 11,
+    new_line: undefined,
+  })
+})
+
+test('gitlabDiscussionPayload sends no line range for a single line', () => {
+  const payload = gitlabDiscussionPayload(draft()) as { position: Record<string, unknown> }
+  assert.equal('line_range' in payload.position, false)
+})
+
+test('bitbucketCommentPayload names where a range starts on the same side', () => {
+  assert.deepEqual(bitbucketCommentPayload(draft({ newLine: 12, range: NEW_RANGE })), {
+    content: { raw: 'a remark' },
+    inline: { path: 'src/a.ts', to: 12, start_to: 10 },
+  })
+  assert.deepEqual(bitbucketCommentPayload(draft({ newLine: undefined, oldLine: 12, range: OLD_RANGE })), {
+    content: { raw: 'a remark' },
+    inline: { path: 'src/a.ts', from: 12, start_from: 11 },
+  })
+})
+
+test('a partial submission names a range by both its ends', async () => {
+  await assert.rejects(
+    submitSequentially(
+      [draft({ id: 'd1', newLine: 12, range: NEW_RANGE }), draft({ id: 'd2', path: 'src/b.ts', newLine: 3 })],
+      async (comment) => {
+        if (comment.id === 'd2') throw new Error('nope')
+      },
+      async () => undefined,
+    ),
+    (error: PartialSubmitError) => {
+      assert.match(error.message, /Posted: src\/a\.ts:10-12\. Still drafted: src\/b\.ts:3\./)
+      return true
+    },
+  )
 })

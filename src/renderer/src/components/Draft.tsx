@@ -44,6 +44,11 @@ export function DraftCard({
     <article className="m-1.5 rounded-md border border-dashed border-info/50 bg-info-soft px-2.5 py-2 font-sans">
       <div className="mb-1 flex items-center gap-1.5">
         <Badge tone="info">Pending</Badge>
+        {draft.range && (
+          <span className="text-[11px] text-muted-foreground">
+            Lines {draft.range.startLine}–{draft.newLine ?? draft.oldLine}
+          </span>
+        )}
         {!editing && (
           <div className="ml-auto flex items-center gap-0.5">
             <Button

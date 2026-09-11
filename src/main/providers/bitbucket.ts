@@ -394,6 +394,7 @@ export const bitbucket: Provider = {
       path: draft.path,
       newLine: draft.newLine,
       oldLine: draft.oldLine,
+      range: draft.range,
       refs: {},
     })
   },

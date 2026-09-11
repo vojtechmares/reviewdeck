@@ -159,7 +159,10 @@ export interface CommentThread {
   outdated: boolean
   /** Present for inline threads. */
   path?: string
+  /** The line the thread is shown on - the last one, when it covers several. */
   line?: number
+  /** The first line the thread covers, on the same side, when it covers several. */
+  startLine?: number
   side?: 'old' | 'new'
   canReply: boolean
   canResolve: boolean
@@ -182,6 +185,38 @@ export interface ReviewSubmission {
 }
 
 /**
+ * One end of the range a multi-line comment covers, placed the way a unified diff
+ * counts: where the line sits in the old file and in the new one at once. An added
+ * line takes the old-file number it was inserted ahead of, a removed line the
+ * new-file number that follows it - so both counters exist for every line.
+ *
+ * Only GitLab addresses a range this way, through the line codes it keys
+ * multi-line notes by. The counters fall straight out of the hunk headers and cost
+ * nothing to carry, and carrying them is what lets a draft be submitted without
+ * the diff it was written against.
+ */
+export interface RangeEdge {
+  kind: 'add' | 'del' | 'context'
+  oldPos: number
+  newPos: number
+}
+
+/**
+ * The lines a comment covers when it covers more than one.
+ *
+ * A range stays on the side of the diff its comment is on and inside one hunk,
+ * which is the shape every host accepts; the comment's own line is the last line
+ * of it, which is where every host shows the comment. Forgejo alone anchors at the
+ * first line, and its adapter converts.
+ */
+export interface LineRange {
+  /** The first line, on the same side as the comment's own line. */
+  startLine: number
+  start: RangeEdge
+  end: RangeEdge
+}
+
+/**
  * A line comment written but not yet sent.
  *
  * Drafts are owned by the main process and carry the diff references they were
@@ -197,6 +232,8 @@ export interface DraftComment {
   newLine?: number
   /** Line in the file before the change, when the comment is on a removed line. */
   oldLine?: number
+  /** Present when the comment covers several lines, ending on the one above. */
+  range?: LineRange
   createdAt: string
   refs: DiffRefs
 }
@@ -209,6 +246,8 @@ export interface LineCommentDraft {
   newLine?: number
   /** Line number in the file *before* the change, when commenting on a removed line. */
   oldLine?: number
+  /** Present when the comment covers several lines, ending on the one above. */
+  range?: LineRange
 }
 
 /**

@@ -21,6 +21,10 @@ export interface GithubComment {
   line?: number | null
   original_line?: number | null
   side?: string
+  /** Set when the comment covers several lines; `line` is then the last of them. */
+  start_line?: number | null
+  original_start_line?: number | null
+  start_side?: string | null
 }
 
 export interface GitlabNote {
@@ -37,6 +41,11 @@ export interface GitlabNote {
     new_line?: number | null
     old_line?: number | null
     head_sha?: string
+    /** Set when the note covers several lines; the position itself is the last. */
+    line_range?: {
+      start?: { new_line?: number | null; old_line?: number | null } | null
+      end?: { new_line?: number | null; old_line?: number | null } | null
+    } | null
   } | null
 }
 
@@ -68,6 +77,12 @@ export interface ForgejoReviewComment {
   position?: number
   /** Line on the old side, or 0. Exactly one of the two is set. */
   original_position?: number
+  /**
+   * How many lines after the position the comment also covers. The position is
+   * the first line of the range, the opposite of every other host - the comment
+   * is shown on the last.
+   */
+  extra_lines_count?: number
   /** Who resolved the conversation this comment belongs to, if anyone has. */
   resolver?: { login?: string } | null
 }
@@ -78,7 +93,14 @@ export interface BitbucketComment {
   content?: { raw?: string }
   created_on: string
   deleted?: boolean
-  inline?: { path: string; to?: number | null; from?: number | null }
+  inline?: {
+    path: string
+    to?: number | null
+    from?: number | null
+    /** Where a comment covering several lines starts; `to` and `from` are its end. */
+    start_to?: number | null
+    start_from?: number | null
+  }
   /** Set on a reply, naming the comment it answers. */
   parent?: { id?: number } | null
   /** Set on the thread's opening comment once the thread has been resolved. */
@@ -90,6 +112,7 @@ interface Anchored {
   comment: PullComment
   path?: string
   line?: number
+  startLine?: number
   side?: 'old' | 'new'
 }
 
@@ -106,10 +129,26 @@ function loneThreads(anchored: Anchored[]): CommentThread[] {
     outdated: false,
     path: entry.path,
     line: entry.line,
+    startLine: entry.startLine,
     side: entry.side,
     canReply: false,
     canResolve: false,
   }))
+}
+
+/**
+ * Where a GitHub range starts, when it starts on the side it ends on. GitHub lets
+ * a range begin on the other side of the diff; the app's range does not, so such
+ * a thread keeps its last line and loses the reach back rather than being drawn
+ * over lines it does not cover.
+ */
+function githubStart(
+  side: string | null | undefined,
+  startSide: string | null | undefined,
+  startLine: number | null | undefined,
+): number | undefined {
+  if (startLine === null || startLine === undefined) return undefined
+  return !startSide || startSide === side ? startLine : undefined
 }
 
 function githubAnchored(comment: GithubComment): Anchored {
@@ -123,6 +162,11 @@ function githubAnchored(comment: GithubComment): Anchored {
     },
     path: comment.path,
     line: line ?? undefined,
+    startLine: githubStart(
+      comment.side,
+      comment.start_side,
+      comment.line ? comment.start_line : comment.original_start_line,
+    ),
     side: comment.side === 'LEFT' ? 'old' : comment.path ? 'new' : undefined,
   }
 }
@@ -157,6 +201,9 @@ export interface GithubReviewThread {
   /** The line in the current diff; null once the thread has gone outdated. */
   line?: number | null
   diffSide?: string | null
+  /** Set when the thread covers several lines, ending on `line`. */
+  startLine?: number | null
+  startDiffSide?: string | null
   viewerCanReply?: boolean
   viewerCanResolve?: boolean
   viewerCanUnresolve?: boolean
@@ -210,6 +257,9 @@ export function githubThreads(
       outdated,
       path: thread.path ?? undefined,
       line: outdated ? undefined : (thread.line ?? undefined),
+      startLine: outdated
+        ? undefined
+        : githubStart(thread.diffSide, thread.startDiffSide, thread.startLine),
       side: thread.diffSide === 'LEFT' ? 'old' : thread.path ? 'new' : undefined,
       canReply: thread.viewerCanReply === true,
       canResolve: resolved ? thread.viewerCanUnresolve === true : thread.viewerCanResolve === true,
@@ -295,6 +345,9 @@ export function forgejoThreads(
     const line = comment.position || comment.original_position
     if (!line) continue
 
+    // Keyed by the position the host groups on - the first line of a range - which
+    // is also where a reply has to be aimed. Where the thread is shown is decided
+    // below.
     const id = forgejoThreadId(comment.path, side, line)
     const existing = conversations.get(id)
     if (existing) existing.push(comment)
@@ -304,6 +357,9 @@ export function forgejoThreads(
   for (const [id, group] of conversations) {
     const anchor = parseForgejoThreadId(id)
     const ordered = [...group].sort((a, b) => a.created_at.localeCompare(b.created_at))
+    // The comment that opened the conversation says how far it reaches; the host
+    // shows the whole thread on the last line it covers, and so does the app.
+    const extra = Math.max(0, ordered[0]?.extra_lines_count ?? 0)
 
     threads.push({
       id,
@@ -312,7 +368,8 @@ export function forgejoThreads(
       resolved: ordered.every((comment) => Boolean(comment.resolver)),
       outdated: false,
       path: anchor?.path,
-      line: anchor?.line,
+      line: anchor ? anchor.line + extra : undefined,
+      startLine: anchor && extra ? anchor.line : undefined,
       side: anchor?.side,
       canReply: true,
       canResolve: false,
@@ -383,6 +440,7 @@ export function bitbucketThreads(comments: BitbucketComment[]): CommentThread[] 
   return roots.sort(byAge).map((root) => {
     const inline = root.inline
     const line = inline?.to ?? inline?.from ?? undefined
+    const start = inline?.to ? inline.start_to : inline?.start_from
 
     return {
       id: String(root.id),
@@ -391,6 +449,7 @@ export function bitbucketThreads(comments: BitbucketComment[]): CommentThread[] 
       outdated: false,
       path: inline?.path,
       line: line ?? undefined,
+      startLine: start ?? undefined,
       side: inline ? (inline.to ? 'new' : 'old') : undefined,
       canReply: true,
       canResolve: Boolean(inline),
@@ -429,6 +488,11 @@ export function gitlabThreads(
     const resolvable = notes.filter((note) => note.resolvable)
     const position = notes.find((note) => note.position)?.position ?? undefined
     const line = position?.new_line ?? position?.old_line ?? undefined
+    // The start on the same side as the note itself; a range the browser drew from
+    // the other side of the diff keeps its last line and nothing more.
+    const start = position?.new_line
+      ? position.line_range?.start?.new_line
+      : position?.line_range?.start?.old_line
 
     threads.push({
       id: discussion.id,
@@ -445,6 +509,7 @@ export function gitlabThreads(
       outdated: Boolean(headSha && position?.head_sha && position.head_sha !== headSha),
       path: position ? (position.new_path ?? position.old_path) : undefined,
       line: line ?? undefined,
+      startLine: start ?? undefined,
       side: position?.new_line ? 'new' : position?.old_line ? 'old' : undefined,
       canReply: true,
       canResolve: resolvable.length > 0,

@@ -21,7 +21,7 @@ import {
   type ForgejoComment,
   type ForgejoReviewComment,
 } from './threads.ts'
-import { forgejoReviewPayload } from './submit.ts'
+import { forgejoInlineComment, forgejoReviewPayload, type Placed } from './submit.ts'
 import { parseUnifiedDiff } from '@shared/diff.ts'
 import type {
   Account,
@@ -371,12 +371,7 @@ export const forgejo: Provider = {
 
   async addLineComment(session, item, draft, refs) {
     // Forgejo attaches inline comments to a review rather than to the PR directly.
-    await inlineComment(session, item, refs.headSha, {
-      path: draft.path,
-      body: draft.body,
-      newLine: draft.newLine,
-      oldLine: draft.oldLine,
-    })
+    await inlineComment(session, item, refs.headSha, draft)
   },
 
   /**
@@ -401,7 +396,7 @@ async function inlineComment(
   session: Session,
   item: ReviewItem,
   commitId: string | undefined,
-  comment: { path: string; body: string; newLine?: number; oldLine?: number },
+  comment: Placed,
 ): Promise<void> {
   await request(api(session, `/repos/${item.repoKey}/pulls/${item.number}/reviews`), {
     method: 'POST',
@@ -411,14 +406,7 @@ async function inlineComment(
       body: '',
       // Left off, Forgejo uses the pull request's head, which is what we want anyway.
       commit_id: commitId,
-      comments: [
-        {
-          path: comment.path,
-          body: comment.body,
-          new_position: comment.newLine ?? 0,
-          old_position: comment.oldLine ?? 0,
-        },
-      ],
+      comments: [forgejoInlineComment(comment)],
     },
   })
 }

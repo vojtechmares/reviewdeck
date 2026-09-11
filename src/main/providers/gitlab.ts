@@ -398,6 +398,7 @@ export const gitlab: Provider = {
       path: draft.path,
       newLine: draft.newLine,
       oldLine: draft.oldLine,
+      range: draft.range,
       refs,
     })
   },

@@ -71,7 +71,10 @@ export function ThreadCard({
           {thread.path && !dense && (
             <span className="mono truncate !text-[11px] text-muted-foreground">
               {thread.path}
-              {thread.line !== undefined && `:${thread.line}`}
+              {thread.line !== undefined &&
+                (thread.startLine !== undefined
+                  ? `:${thread.startLine}-${thread.line}`
+                  : `:${thread.line}`)}
             </span>
           )}
         </div>

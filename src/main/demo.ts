@@ -318,6 +318,8 @@ export function demoDetail(item: ReviewItem): PullDetail {
         canResolve: resolvable,
         path: 'internal/payments/capture.go',
         line: 55,
+        // Covers the whole branch, so the demo shows a thread over several lines.
+        startLine: 53,
         side: 'new',
         comments: [
           {

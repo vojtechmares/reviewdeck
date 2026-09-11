@@ -1,12 +1,25 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react'
 import { ChevronRight, FilePlus2, FileMinus2, FileSymlink, MessageSquarePlus, Plus } from 'lucide-react'
 import {
-  commentTargets,
+  coversLine,
+  lineOn,
   parsePatch,
+  rangeTarget,
+  sideTarget,
   toSplitRows,
   type CommentTarget,
   type DiffHunk,
   type DiffLine,
+  type DiffSide,
 } from '@shared/diff'
 import { languageFor } from '@shared/highlight'
 import type { CommentThread, DiffFile, DraftComment, LineCommentDraft } from '@shared/types'
@@ -192,6 +205,7 @@ function FileBlock({
   // Lifted out of the hunk tables: an open composer is what keeps a section
   // rendered, so a half-typed comment cannot be thrown away by a scroll.
   const [target, setTarget] = useState<CommentTarget | null>(null)
+  const selection = useRangeSelection(file.path, target, setTarget)
 
   const section = useRef<HTMLElement>(null)
   const rows = useRef<HTMLDivElement>(null)
@@ -277,6 +291,7 @@ function FileBlock({
                   drafts={drafts}
                   target={target}
                   setTarget={setTarget}
+                  selection={selection}
                   onComment={onComment}
                   onReply={onReply}
                   onResolve={onResolve}
@@ -291,6 +306,7 @@ function FileBlock({
                   drafts={drafts}
                   target={target}
                   setTarget={setTarget}
+                  selection={selection}
                   onComment={onComment}
                   onReply={onReply}
                   onResolve={onResolve}
@@ -331,6 +347,147 @@ const CODE_BG: Record<string, string> = {
   meta: 'diff-code',
 }
 
+/** A range being drawn: from the line the pointer went down on to where it is now. */
+interface Selecting {
+  hunk: DiffHunk
+  side: DiffSide
+  from: DiffLine
+  to: DiffLine
+}
+
+/** What the tables get from the selection: how to start and grow one, and what it covers. */
+interface RangeSelection {
+  /** The pointer went down on a line's comment button. */
+  begin: (event: React.PointerEvent, hunk: DiffHunk, side: DiffSide, line: DiffLine) => void
+  /** The pointer entered a line's gutter while a range was being drawn. */
+  extend: (hunk: DiffHunk, side: DiffSide, line: DiffLine) => void
+  /** The button was activated from the keyboard, which has no drag to wait for. */
+  pick: (side: DiffSide, line: DiffLine) => void
+  covers: (side: DiffSide, line: DiffLine) => boolean
+}
+
+/**
+ * Drawing a comment over several lines, the way every host's own diff does it:
+ * press on a line's comment button and drag along the gutter, or hold shift and
+ * click a second line to stretch an open composer to it.
+ *
+ * A press that never leaves its line is an ordinary single-line comment, so the
+ * one gesture covers both. The range is confined to one side of the diff and one
+ * hunk, which is the shape every host accepts, and a drag that crosses either is
+ * simply not followed there.
+ */
+function useRangeSelection(
+  path: string,
+  target: CommentTarget | null,
+  setTarget: (target: CommentTarget | null) => void,
+): RangeSelection {
+  const [selecting, setSelecting] = useState<Selecting | null>(null)
+
+  const begin = useCallback(
+    (event: React.PointerEvent, hunk: DiffHunk, side: DiffSide, line: DiffLine) => {
+      if (event.button !== 0) return
+      // Dragging along a gutter must not also drag-select the code beside it.
+      event.preventDefault()
+
+      // Shift stretches the open composer to take this line in as well, so a
+      // range can be made without a steady hand.
+      if (event.shiftKey && target) {
+        const from = stretch(hunk, side, target, line)
+        if (from) {
+          setSelecting({ hunk, side, from, to: line })
+          return
+        }
+      }
+      setSelecting({ hunk, side, from: line, to: line })
+    },
+    [target],
+  )
+
+  const extend = useCallback((hunk: DiffHunk, side: DiffSide, line: DiffLine) => {
+    setSelecting((current) => {
+      if (!current || current.hunk !== hunk || current.side !== side) return current
+      if (lineOn(line, side) === undefined || current.to === line) return current
+      return { ...current, to: line }
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!selecting) return
+    const finish = (): void => {
+      const { hunk, side, from, to } = selecting
+      setTarget(rangeTarget(path, hunk, side, from, to) ?? null)
+      setSelecting(null)
+    }
+    const cancel = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setSelecting(null)
+    }
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('keydown', cancel)
+    return () => {
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('keydown', cancel)
+    }
+  }, [selecting, path, setTarget])
+
+  const pick = useCallback(
+    (side: DiffSide, line: DiffLine) => setTarget(sideTarget(path, line, side) ?? null),
+    [path, setTarget],
+  )
+
+  const covers = useCallback(
+    (side: DiffSide, line: DiffLine): boolean => {
+      if (!selecting || selecting.side !== side) return false
+      const number = lineOn(line, side)
+      const a = lineOn(selecting.from, side)
+      const b = lineOn(selecting.to, side)
+      if (number === undefined || a === undefined || b === undefined) return false
+      return number >= Math.min(a, b) && number <= Math.max(a, b)
+    },
+    [selecting],
+  )
+
+  return useMemo(() => ({ begin, extend, pick, covers }), [begin, extend, pick, covers])
+}
+
+/**
+ * The far end of an open composer, when it can be stretched to another line: the
+ * line of it furthest from the one clicked, so the new range takes in both. Nothing
+ * when the composer is on the other side or in another hunk.
+ */
+function stretch(
+  hunk: DiffHunk,
+  side: DiffSide,
+  target: CommentTarget,
+  clicked: DiffLine,
+): DiffLine | undefined {
+  const anchor = anchorOf(target)
+  if (!anchor || anchor.side !== side) return undefined
+  const number = lineOn(clicked, side)
+  if (number === undefined) return undefined
+  const far = number < anchor.line ? anchor.line : (anchor.startLine ?? anchor.line)
+  return hunk.lines.find((line) => lineOn(line, side) === far)
+}
+
+/** Where something that stands on one line and may reach back over others sits. */
+interface Anchor {
+  side: DiffSide
+  line: number
+  startLine?: number
+}
+
+function anchorOf(target: { newLine?: number; oldLine?: number; range?: { startLine: number } }): Anchor | undefined {
+  if (target.newLine !== undefined) {
+    return { side: 'new', line: target.newLine, startLine: target.range?.startLine }
+  }
+  if (target.oldLine !== undefined) {
+    return { side: 'old', line: target.oldLine, startLine: target.range?.startLine }
+  }
+  return undefined
+}
+
+/** Which tint a line's gutter takes on one side, if anything there covers it. */
+type Coverage = 'active' | 'pending' | 'thread' | undefined
+
 interface HunkTableProps {
   hunks: DiffHunk[]
   path: string
@@ -339,6 +496,7 @@ interface HunkTableProps {
   drafts: DraftComment[]
   target: CommentTarget | null
   setTarget: (target: CommentTarget | null) => void
+  selection: RangeSelection
   onComment: DiffViewProps['onComment']
   onReply: DiffViewProps['onReply']
   onResolve: DiffViewProps['onResolve']
@@ -353,6 +511,41 @@ function draftsOn(drafts: DraftComment[], line: DiffLine | undefined): DraftComm
   )
 }
 
+/**
+ * What covers a line on one side, strongest first: the range being drawn or the
+ * open composer, then a pending draft, then a thread already on the host. Only
+ * things reaching over several lines count for the last two - a single-line
+ * thread is marked by its card, and tinting its gutter as well would say nothing.
+ */
+function coverage(
+  side: DiffSide,
+  line: DiffLine,
+  target: CommentTarget | null,
+  selection: RangeSelection,
+  drafts: DraftComment[],
+  threads: CommentThread[],
+): Coverage {
+  if (selection.covers(side, line)) return 'active'
+  const active = target && anchorOf(target)
+  if (active && active.side === side && coversLine(active, line)) return 'active'
+
+  for (const draft of drafts) {
+    const anchor = draft.range && anchorOf(draft)
+    if (anchor && anchor.side === side && coversLine(anchor, line)) return 'pending'
+  }
+  for (const thread of threads) {
+    if (thread.startLine === undefined || thread.line === undefined || thread.side !== side) continue
+    if (coversLine({ side, line: thread.line, startLine: thread.startLine }, line)) return 'thread'
+  }
+  return undefined
+}
+
+const COVERAGE_BG: Record<NonNullable<Coverage>, string> = {
+  active: 'bg-info/30',
+  pending: 'bg-info/15',
+  thread: 'bg-[var(--diff-gutter)]/15',
+}
+
 function UnifiedHunks({
   hunks,
   path,
@@ -361,6 +554,7 @@ function UnifiedHunks({
   drafts,
   target,
   setTarget,
+  selection,
   onComment,
   onReply,
   onResolve,
@@ -400,14 +594,23 @@ function UnifiedHunks({
                 (thread) => thread.line === (line.newLine ?? line.oldLine),
               )
               const isTarget = target !== null && sameLine(target, line)
-              const onOld = sideTarget(path, line, 'old')
-              const onNew = sideTarget(path, line, 'new')
 
               return (
                 <Fragment key={lineIndex}>
                   <tr className={cn('group', CELL_BG[line.kind])}>
-                    <Gutter value={line.oldLine} onAdd={onOld && (() => setTarget(onOld))} />
-                    <Gutter value={line.newLine} onAdd={onNew && (() => setTarget(onNew))} />
+                    {(['old', 'new'] as const).map((side) => (
+                      <Gutter
+                        key={side}
+                        value={lineOn(line, side)}
+                        covered={coverage(side, line, target, selection, drafts, threads)}
+                        onPick={
+                          sideTarget(path, line, side) &&
+                          ((event) => selection.begin(event, hunk, side, line))
+                        }
+                        onKeyPick={() => selection.pick(side, line)}
+                        onEnter={() => selection.extend(hunk, side, line)}
+                      />
+                    ))}
                     <Code line={line} tokens={tokens?.get(line)} />
                   </tr>
                   {attached.map((thread) => (
@@ -458,6 +661,7 @@ function SplitHunks({
   drafts,
   target,
   setTarget,
+  selection,
   onComment,
   onReply,
   onResolve,
@@ -494,8 +698,6 @@ function SplitHunks({
               )
               const activeSide =
                 target && ((right && target.newLine === right.newLine) || (left && target.oldLine === left.oldLine))
-              const onLeft = left && sideTarget(path, left, 'old')
-              const onRight = right && sideTarget(path, right, 'new')
 
               return (
                 <Fragment key={rowIndex}>
@@ -503,13 +705,27 @@ function SplitHunks({
                     <Gutter
                       value={left?.oldLine}
                       className={left && !paired ? 'bg-[var(--diff-del)]' : ''}
-                      onAdd={onLeft && (() => setTarget(onLeft))}
+                      covered={left && coverage('old', left, target, selection, drafts, threads)}
+                      onPick={
+                        left &&
+                        sideTarget(path, left, 'old') &&
+                        ((event) => selection.begin(event, hunk, 'old', left))
+                      }
+                      onKeyPick={left && (() => selection.pick('old', left))}
+                      onEnter={left && (() => selection.extend(hunk, 'old', left))}
                     />
                     <Code line={left} tokens={left ? tokens?.get(left) : undefined} />
                     <Gutter
                       value={right?.newLine}
                       className={right && !paired ? 'bg-[var(--diff-add)]' : ''}
-                      onAdd={onRight && (() => setTarget(onRight))}
+                      covered={right && coverage('new', right, target, selection, drafts, threads)}
+                      onPick={
+                        right &&
+                        sideTarget(path, right, 'new') &&
+                        ((event) => selection.begin(event, hunk, 'new', right))
+                      }
+                      onKeyPick={right && (() => selection.pick('new', right))}
+                      onEnter={right && (() => selection.extend(hunk, 'new', right))}
                     />
                     <Code line={right} tokens={right ? tokens?.get(right) : undefined} />
                   </tr>
@@ -555,25 +771,38 @@ function SplitHunks({
 
 function Gutter({
   value,
-  onAdd,
+  covered,
+  onPick,
+  onKeyPick,
+  onEnter,
   className,
 }: {
   value?: number
-  onAdd?: () => void
+  covered?: Coverage
+  /** Pressing the comment button: the start of a comment, or of a range of them. */
+  onPick?: (event: React.PointerEvent) => void
+  /** Activating it from the keyboard, which is always a single line. */
+  onKeyPick?: () => void
+  /** The pointer arriving over this cell, which is how a range grows. */
+  onEnter?: () => void
   className?: string
 }): React.JSX.Element {
   return (
     <td
+      onPointerEnter={onEnter}
       className={cn(
         'relative w-11 border-r border-border/60 px-1.5 text-right align-top',
         '!text-[11px] text-[var(--diff-gutter)] tabular-nums select-none',
         className,
+        covered && COVERAGE_BG[covered],
       )}
     >
       {value ?? ''}
-      {onAdd && value !== undefined && (
+      {onPick && value !== undefined && (
         <button
-          onClick={onAdd}
+          onPointerDown={onPick}
+          // A click with no pointer behind it came from the keyboard.
+          onClick={(event) => event.detail === 0 && onKeyPick?.()}
           aria-label={`Comment on line ${value}`}
           className={cn(
             'absolute top-1/2 -left-0.5 hidden size-4 -translate-y-1/2 items-center justify-center',
@@ -655,14 +884,16 @@ function Composer({
     <div className="glass-quiet m-1.5 rounded-md p-2 font-sans">
       <p className="mb-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <MessageSquarePlus className="size-3.5" />
-        Commenting on line {target.newLine ?? target.oldLine} of{' '}
+        {target.range
+          ? `Commenting on lines ${target.range.startLine}–${target.newLine ?? target.oldLine} of`
+          : `Commenting on line ${target.newLine ?? target.oldLine} of`}{' '}
         <span className="mono !text-[11px]">{target.path}</span>
       </p>
       <Textarea
         autoFocus
         rows={3}
         value={body}
-        placeholder="Leave a note on this line…"
+        placeholder={target.range ? 'Leave a note on these lines…' : 'Leave a note on this line…'}
         onChange={(event) => setBody(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === 'Escape') onCancel()
@@ -679,13 +910,6 @@ function Composer({
         </Button>
       </div>
     </div>
-  )
-}
-
-/** The comment this line takes from one gutter, or nothing when it has no line there. */
-function sideTarget(path: string, line: DiffLine, side: 'old' | 'new'): CommentTarget | undefined {
-  return commentTargets(path, line).find((target) =>
-    side === 'old' ? target.oldLine !== undefined : target.newLine !== undefined,
   )
 }
 

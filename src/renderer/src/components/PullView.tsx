@@ -195,6 +195,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
             path: draft.path,
             newLine: draft.newLine,
             oldLine: draft.oldLine,
+            range: draft.range,
             // What the diff looked like when it was written, so it can be sent
             // against the code that was actually read.
             refs: detail.refs,

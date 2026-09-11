@@ -14,7 +14,7 @@
  * submission fails can be tested directly.
  */
 
-import type { DiffRefs, DraftComment, MyReviewState } from '@shared/types.ts'
+import type { DiffRefs, DraftComment, LineRange, MyReviewState } from '@shared/types.ts'
 
 /**
  * What is known about one item's drafts beyond the text itself.
@@ -72,6 +72,7 @@ export interface NewDraft {
   path: string
   newLine?: number
   oldLine?: number
+  range?: LineRange
   refs: DiffRefs
 }
 

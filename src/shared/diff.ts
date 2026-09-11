@@ -6,15 +6,24 @@
  * GitLab `changes[].diff`). Both funnel through the same hunk parser.
  */
 
-import type { DiffFile } from './types.ts'
+import type { DiffFile, LineRange, RangeEdge } from './types.ts'
 
 export type DiffLineKind = 'context' | 'add' | 'del' | 'meta'
 
 export interface DiffLine {
   kind: DiffLineKind
   content: string
+  /** Set only on the sides the line exists on: both for context, one for a change. */
   oldLine?: number
   newLine?: number
+  /**
+   * Where the line sits in each file as the diff counts it, set on every line but
+   * an annotation. Unlike the two above these never go missing: an added line
+   * carries the old-file number it was inserted ahead of, a removed line the
+   * new-file number that follows it. See `RangeEdge`.
+   */
+  oldPos?: number
+  newPos?: number
 }
 
 export interface DiffHunk {
@@ -63,14 +72,14 @@ export function parsePatch(patch: string): DiffHunk[] {
     const marker = raw[0]
     const content = raw.slice(1)
     if (marker === '+') {
-      current.lines.push({ kind: 'add', content, newLine })
+      current.lines.push({ kind: 'add', content, newLine, oldPos: oldLine, newPos: newLine })
       newLine++
     } else if (marker === '-') {
-      current.lines.push({ kind: 'del', content, oldLine })
+      current.lines.push({ kind: 'del', content, oldLine, oldPos: oldLine, newPos: newLine })
       oldLine++
     } else if (marker === ' ' || raw === '') {
       // A fully empty line inside a hunk is a context line whose content is empty.
-      current.lines.push({ kind: 'context', content, oldLine, newLine })
+      current.lines.push({ kind: 'context', content, oldLine, newLine, oldPos: oldLine, newPos: newLine })
       oldLine++
       newLine++
     }
@@ -209,11 +218,80 @@ export function toSplitRows(hunk: DiffHunk): SplitRow[] {
   return rows
 }
 
-/** Where a line comment lands: the file, and the line on whichever side it is on. */
+/**
+ * Where a line comment lands: the file, the line on whichever side it is on, and
+ * the lines above it that it also covers, if any.
+ */
 export interface CommentTarget {
   path: string
   newLine?: number
   oldLine?: number
+  range?: LineRange
+}
+
+export type DiffSide = 'old' | 'new'
+
+/** The number a line has on one side, or nothing when it is not on that side. */
+export function lineOn(line: DiffLine, side: DiffSide): number | undefined {
+  return side === 'new' ? line.newLine : line.oldLine
+}
+
+function edge(line: DiffLine): RangeEdge | undefined {
+  if (line.kind === 'meta' || line.oldPos === undefined || line.newPos === undefined) return undefined
+  return { kind: line.kind, oldPos: line.oldPos, newPos: line.newPos }
+}
+
+/**
+ * The comment covering every line from one to another on one side of a hunk, in
+ * whichever order the two were picked - or nothing when the pair cannot make one.
+ *
+ * Both lines have to be on the side asked for, and both in the same hunk: the
+ * lines between two hunks are not in the diff, and a host asked to cover them
+ * refuses the whole comment. The same line twice is an ordinary single-line
+ * comment, which is what a drag that never left its row should produce.
+ */
+export function rangeTarget(
+  path: string,
+  hunk: DiffHunk,
+  side: DiffSide,
+  first: DiffLine,
+  second: DiffLine,
+): CommentTarget | undefined {
+  if (!hunk.lines.includes(first) || !hunk.lines.includes(second)) return undefined
+  const a = lineOn(first, side)
+  const b = lineOn(second, side)
+  if (a === undefined || b === undefined) return undefined
+
+  const [from, to] = a <= b ? [first, second] : [second, first]
+  const last = sideTarget(path, to, side)
+  if (!last) return undefined
+  if (from === to) return last
+
+  const start = edge(from)
+  const end = edge(to)
+  if (!start || !end) return undefined
+  return { ...last, range: { startLine: lineOn(from, side)!, start, end } }
+}
+
+/** The comment this line takes from one gutter, or nothing when it has no line there. */
+export function sideTarget(path: string, line: DiffLine, side: DiffSide): CommentTarget | undefined {
+  return commentTargets(path, line).find((target) =>
+    side === 'old' ? target.oldLine !== undefined : target.newLine !== undefined,
+  )
+}
+
+/**
+ * Whether a comment standing on `last` and reaching back to `startLine` covers a
+ * line - by number on that side, which is all a range is once it has left the
+ * diff it was drawn on.
+ */
+export function coversLine(
+  anchor: { side: DiffSide; line: number; startLine?: number },
+  line: DiffLine,
+): boolean {
+  const number = lineOn(line, anchor.side)
+  if (number === undefined) return false
+  return number <= anchor.line && number >= (anchor.startLine ?? anchor.line)
 }
 
 /**
