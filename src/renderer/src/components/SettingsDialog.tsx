@@ -126,6 +126,15 @@ export function SettingsDialog({
             onChange={(value) => set('hideApproved', value)}
           />
           <Toggle
+            label="Hide pull requests that already have every required approval"
+            checked={settings.hideFullyApproved}
+            onChange={(value) => set('hideFullyApproved', value)}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Only where the host says what it requires and that it has it. A branch with
+            no rule, or one the token cannot read, is never hidden.
+          </p>
+          <Toggle
             label="Hide draft pull requests"
             checked={settings.hideDrafts}
             onChange={(value) => set('hideDrafts', value)}

@@ -65,6 +65,24 @@ export interface CheckSummary {
 /** How the signed-in user has reviewed a PR so far. */
 export type MyReviewState = 'pending' | 'approved' | 'changes_requested' | 'commented'
 
+/**
+ * Where a pull request stands against the approvals its host wants before it
+ * will merge.
+ *
+ * `none_required` is also the answer when the host will not say: a GitHub branch
+ * with no protection and a Bitbucket repository the token cannot administer look
+ * the same from here, and neither is a reason to hide anything.
+ */
+export type ApprovalOutcome = 'none_required' | 'pending' | 'satisfied'
+
+export interface ApprovalSummary {
+  /** Reviewers whose standing verdict is an approval, whoever they are. */
+  given: number
+  /** How many the host asks for; absent when it does not say. */
+  required?: number
+  outcome: ApprovalOutcome
+}
+
 export interface User {
   name: string
   avatarUrl: string
@@ -90,6 +108,7 @@ export interface ReviewItem {
   targetBranch: string
   labels: string[]
   myReviewState: MyReviewState
+  approvals: ApprovalSummary
   checks: CheckSummary
   /** Set when the provider reports it cheaply; otherwise filled in on detail load. */
   additions?: number
@@ -228,6 +247,8 @@ export interface Settings {
   theme: 'system' | 'light' | 'dark'
   /** Hide PRs the user has already approved. */
   hideApproved: boolean
+  /** Hide PRs that already carry every approval their host asks for. */
+  hideFullyApproved: boolean
   /** Hide PRs still being written, by the host's flag or by the title convention. */
   hideDrafts: boolean
   /** Draw the waiting count beside the menu bar icon. Off leaves the icon alone. */
@@ -253,6 +274,7 @@ export const DEFAULT_SETTINGS: Settings = {
   diffView: 'split',
   theme: 'system',
   hideApproved: false,
+  hideFullyApproved: true,
   hideDrafts: true,
   showMenuBarCount: true,
   launchAtLogin: false,
@@ -289,8 +311,37 @@ export function mergeSettings(stored: Partial<Settings> | null | undefined): Set
  */
 export function isVisibleReview(item: ReviewItem, settings: Settings): boolean {
   if (settings.hideApproved && item.myReviewState === 'approved') return false
+  if (settings.hideFullyApproved && item.approvals.outcome === 'satisfied') return false
   if (settings.hideDrafts && isDraftReview(item)) return false
   return true
+}
+
+/** What no host has said anything about: nothing given, nothing asked for. */
+export function noApprovals(): ApprovalSummary {
+  return { given: 0, outcome: 'none_required' }
+}
+
+/**
+ * The approval count once this user's own approval has gone out.
+ *
+ * The card is patched straight away rather than waiting for the next sync, so the
+ * count moves the moment the button does. Only the required count can settle the
+ * outcome, and only when the host gave one; a host that says nothing keeps saying
+ * nothing until it is asked again.
+ */
+export function approvalsAfterApproving(
+  approvals: ApprovalSummary,
+  alreadyApproved: boolean,
+): ApprovalSummary {
+  if (alreadyApproved) return approvals
+  const given = approvals.given + 1
+  const outcome =
+    approvals.outcome === 'none_required'
+      ? 'none_required'
+      : approvals.required !== undefined && given >= approvals.required
+        ? 'satisfied'
+        : approvals.outcome
+  return { ...approvals, given, outcome }
 }
 
 /** A title that says draft before it says anything else. */

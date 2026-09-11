@@ -6,7 +6,14 @@
  */
 
 import { ApiError, paginate, request, toOrigin } from '../http.ts'
-import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
+import {
+  countApprovers,
+  limitConcurrency,
+  makeItemId,
+  summariseChecks,
+  type Provider,
+  type Session,
+} from './types.ts'
 import {
   githubFlatThreads,
   githubThreads,
@@ -18,6 +25,8 @@ import { githubReviewComments } from './submit.ts'
 import type {
   Account,
   AccountDraft,
+  ApprovalOutcome,
+  ApprovalSummary,
   CheckRun,
   CheckStatus,
   CheckSummary,
@@ -294,29 +303,72 @@ async function loadChecks(session: Session, repo: string, sha: string, signal?: 
   return { ...summariseChecks(runs), runs }
 }
 
-async function myReviewState(
+const DECISION_QUERY = `
+query Decision($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewDecision
+    }
+  }
+}`
+
+interface DecisionQuery {
+  repository: { pullRequest: { reviewDecision: string | null } | null } | null
+}
+
+/**
+ * The user's own verdict and the pull request's standing.
+ *
+ * The count comes from the review list. The verdict on it does not: whether the
+ * approvals given are the ones the branch wants - how many, and from a code owner
+ * or not - is settled by branch protection, which the REST API only shows to a
+ * repository admin. GraphQL's `reviewDecision` is that verdict without the
+ * admin, and null there is a branch with no protection asking for reviews at all.
+ */
+async function loadApprovals(
   session: Session,
   repo: string,
   number: number,
   signal?: AbortSignal,
-): Promise<MyReviewState> {
+): Promise<{ reviewState: MyReviewState; approvals: ApprovalSummary }> {
+  let reviewState: MyReviewState = 'pending'
+  let given = 0
   try {
     const reviews = await request<GhReview[]>(
       api(session, `/repos/${repo}/pulls/${number}/reviews?per_page=100`),
       { headers: headers(session), signal },
     )
+    given = countApprovers(reviews.map((review) => ({ login: review.user?.login, state: review.state })))
     const mine = reviews.filter((review) => review.user?.login === session.account.username)
     // The last non-comment verdict is the one that counts.
     for (let i = mine.length - 1; i >= 0; i--) {
       const state = mine[i].state
-      if (state === 'APPROVED') return 'approved'
-      if (state === 'CHANGES_REQUESTED') return 'changes_requested'
+      if (state === 'APPROVED') {
+        reviewState = 'approved'
+        break
+      }
+      if (state === 'CHANGES_REQUESTED') {
+        reviewState = 'changes_requested'
+        break
+      }
     }
-    if (mine.length) return 'commented'
+    if (reviewState === 'pending' && mine.length) reviewState = 'commented'
   } catch {
     /* a missing review list should not sink the whole sync */
   }
-  return 'pending'
+
+  let outcome: ApprovalOutcome = 'none_required'
+  try {
+    const { owner, name } = splitRepo(repo)
+    const data = await graphql<DecisionQuery>(session, DECISION_QUERY, { owner, name, number }, signal)
+    const decision = data.repository?.pullRequest?.reviewDecision ?? null
+    if (decision === 'APPROVED') outcome = 'satisfied'
+    else if (decision === 'REVIEW_REQUIRED' || decision === 'CHANGES_REQUESTED') outcome = 'pending'
+  } catch {
+    /* a token that cannot ask is a branch that says nothing */
+  }
+
+  return { reviewState, approvals: { given, outcome } }
 }
 
 export const github: Provider = {
@@ -352,9 +404,9 @@ export const github: Provider = {
         headers: headers(session),
         signal,
       })
-      const [checks, reviewState] = await Promise.all([
+      const [checks, { reviewState, approvals }] = await Promise.all([
         loadChecks(session, repo, pull.head.sha, signal).catch(() => emptyChecks()),
-        myReviewState(session, repo, found.number, signal),
+        loadApprovals(session, repo, found.number, signal),
       ])
 
       const item: ReviewItem = {
@@ -374,6 +426,7 @@ export const github: Provider = {
         targetBranch: pull.base.ref,
         labels: (pull.labels ?? []).map((label) => label.name),
         myReviewState: reviewState,
+        approvals,
         checks,
         additions: pull.additions,
         deletions: pull.deletions,

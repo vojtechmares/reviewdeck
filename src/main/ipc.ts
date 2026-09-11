@@ -18,7 +18,7 @@ import {
   setToken,
   updateAccount,
 } from './store.ts'
-import { PROVIDER_LABELS } from '@shared/types.ts'
+import { PROVIDER_LABELS, approvalsAfterApproving } from '@shared/types.ts'
 import type {
   Account,
   AccountDraft,
@@ -186,7 +186,13 @@ export function registerIpc(): void {
       drafts.recordSubmission(item.id, state)
       // Only now: a submission that threw outright leaves every draft where it was.
       drafts.clear(item.id)
-      deck.patch(item.id, { myReviewState: state })
+      deck.patch(item.id, {
+        myReviewState: state,
+        approvals:
+          state === 'approved'
+            ? approvalsAfterApproving(item.approvals, item.myReviewState === 'approved')
+            : item.approvals,
+      })
     } catch (error) {
       fail(error)
     }
@@ -296,6 +302,7 @@ export function registerIpc(): void {
     // the next background refresh.
     if (
       patch.hideApproved !== undefined ||
+      patch.hideFullyApproved !== undefined ||
       patch.hideDrafts !== undefined ||
       patch.showMenuBarCount !== undefined
     ) {

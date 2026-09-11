@@ -1,6 +1,7 @@
 import type {
   Account,
   AccountDraft,
+  ApprovalSummary,
   CheckStatus,
   CommentThread,
   DraftComment,
@@ -84,6 +85,49 @@ export function summariseChecks(
     running,
     total: runs.length,
   }
+}
+
+/**
+ * Fold an approval count against what the host asks for.
+ *
+ * For hosts that only publish a plain number: a rule that names who has to
+ * approve (GitLab's rules, GitHub's code owners) is settled by the host itself,
+ * and those adapters build the summary from its verdict rather than from here.
+ * `required` unknown or zero both read as nothing required, which is also what
+ * the card shows when the token was not allowed to ask.
+ */
+export function summariseApprovals(given: number, required?: number): ApprovalSummary {
+  if (!required) return { given, required, outcome: 'none_required' }
+  return { given, required, outcome: given >= required ? 'satisfied' : 'pending' }
+}
+
+/**
+ * Who stands approving once every reviewer's latest verdict is taken. A review
+ * that only comments does not move a verdict; a dismissed one withdraws it.
+ */
+export function countApprovers(
+  reviews: { login: string | undefined; state: string }[],
+): number {
+  const standing = new Map<string, string>()
+  for (const review of reviews) {
+    if (!review.login) continue
+    const state = review.state.toUpperCase()
+    if (state === 'COMMENTED' || state === 'COMMENT' || state === 'PENDING') continue
+    standing.set(review.login, state)
+  }
+  let given = 0
+  for (const state of standing.values()) if (state === 'APPROVED') given++
+  return given
+}
+
+/**
+ * Whether a branch restriction's pattern covers a branch. Bitbucket's patterns
+ * are globs where `*` stands for any run of characters, and one per pattern is
+ * what the app needs - `**` and character classes are read literally.
+ */
+export function restrictionCovers(pattern: string, branch: string): boolean {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
+  return new RegExp(`^${escaped}$`).test(branch)
 }
 
 export function makeItemId(accountId: string, repoKey: string, number: number): string {

@@ -8,7 +8,15 @@
  */
 
 import { request, toOrigin } from '../http.ts'
-import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
+import {
+  limitConcurrency,
+  makeItemId,
+  restrictionCovers,
+  summariseApprovals,
+  summariseChecks,
+  type Provider,
+  type Session,
+} from './types.ts'
 import { bitbucketThreads, type BitbucketComment } from './threads.ts'
 import { bitbucketCommentPayload, submitSequentially } from './submit.ts'
 import { parseUnifiedDiff } from '@shared/diff.ts'
@@ -59,6 +67,14 @@ interface BbParticipant {
   role: string
   approved: boolean
   state: string | null
+}
+
+interface BbBranchRestriction {
+  kind: string
+  pattern?: string
+  branch_match_kind?: string
+  branch_type?: string
+  value?: number | null
 }
 
 interface BbPullRequest {
@@ -166,6 +182,40 @@ function reviewStateFor(pr: BbPullRequest, uuid: string): MyReviewState {
   return 'pending'
 }
 
+function approversOf(pr: BbPullRequest): number {
+  return (pr.participants ?? []).filter((participant) => participant.approved).length
+}
+
+/**
+ * The approval counts a repository's branch restrictions ask for, keyed by
+ * pattern. Reading restrictions takes repository admin, which a reviewer rarely
+ * has; the failure reads as a repository that asks for nothing, which is all the
+ * app can honestly say. One call per repository, whatever it holds.
+ */
+async function loadRestrictions(
+  session: Session,
+  repo: string,
+  signal?: AbortSignal,
+): Promise<BbBranchRestriction[]> {
+  return collect<BbBranchRestriction>(
+    `${API_ROOT}/repositories/${repo}/branch-restrictions?kind=require_approvals_to_merge&pagelen=50`,
+    session,
+    50,
+    signal,
+  ).catch(() => [] as BbBranchRestriction[])
+}
+
+function requiredFor(restrictions: BbBranchRestriction[], branch: string): number | undefined {
+  let required: number | undefined
+  for (const restriction of restrictions) {
+    if (restriction.kind !== 'require_approvals_to_merge') continue
+    if (restriction.branch_match_kind === 'branching_model') continue
+    if (!restriction.pattern || !restrictionCovers(restriction.pattern, branch)) continue
+    required = Math.max(required ?? 0, restriction.value ?? 0)
+  }
+  return required
+}
+
 function isMyReview(pr: BbPullRequest, uuid: string): boolean {
   if ((pr.reviewers ?? []).some((reviewer) => reviewer.uuid === uuid)) return true
   return (pr.participants ?? []).some(
@@ -228,13 +278,13 @@ export const bitbucket: Provider = {
         50,
         signal,
       ).catch(() => [] as BbPullRequest[])
-      return pulls
-        .filter((pr) => isMyReview(pr, me.uuid) && pr.author?.uuid !== me.uuid)
-        .map((pr) => ({ repo: repo.full_name, pr }))
+      const mine = pulls.filter((pr) => isMyReview(pr, me.uuid) && pr.author?.uuid !== me.uuid)
+      const restrictions = mine.length ? await loadRestrictions(session, repo.full_name, signal) : []
+      return mine.map((pr) => ({ repo: repo.full_name, pr, restrictions }))
     })
 
     const candidates = perRepo.flat()
-    return limitConcurrency(candidates, 6, async ({ repo, pr }) => {
+    return limitConcurrency(candidates, 6, async ({ repo, pr, restrictions }) => {
       const checks = await loadChecks(session, repo, pr.id, signal)
       const item: ReviewItem = {
         id: makeItemId(session.account.id, repo, pr.id),
@@ -253,6 +303,10 @@ export const bitbucket: Provider = {
         targetBranch: pr.destination?.branch?.name ?? '',
         labels: [],
         myReviewState: reviewStateFor(pr, me.uuid),
+        approvals: summariseApprovals(
+          approversOf(pr),
+          requiredFor(restrictions, pr.destination?.branch?.name ?? ''),
+        ),
         checks,
       }
       return item

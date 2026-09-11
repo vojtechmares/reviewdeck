@@ -68,6 +68,7 @@ export const DEMO_ITEMS: ReviewItem[] = [
     targetBranch: 'main',
     labels: ['payments', 'needs-review'],
     myReviewState: 'pending',
+    approvals: { given: 1, outcome: 'pending' },
     checks: {
       status: 'failed',
       passed: 4,
@@ -103,6 +104,7 @@ export const DEMO_ITEMS: ReviewItem[] = [
     targetBranch: 'main',
     labels: ['infra'],
     myReviewState: 'pending',
+    approvals: { given: 2, required: 2, outcome: 'satisfied' },
     checks: {
       status: 'running',
       passed: 3,
@@ -138,6 +140,7 @@ export const DEMO_ITEMS: ReviewItem[] = [
     targetBranch: 'main',
     labels: [],
     myReviewState: 'commented',
+    approvals: { given: 0, outcome: 'none_required' },
     checks: { status: 'unknown', passed: 0, failed: 0, running: 0, total: 0, runs: [] },
     additions: 44,
     deletions: 3,
@@ -160,6 +163,7 @@ export const DEMO_ITEMS: ReviewItem[] = [
     targetBranch: 'main',
     labels: ['design-system'],
     myReviewState: 'approved',
+    approvals: { given: 1, outcome: 'satisfied' },
     checks: {
       status: 'passed',
       passed: 3,

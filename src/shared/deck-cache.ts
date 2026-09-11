@@ -13,13 +13,13 @@
  * shape nobody wrote is a crash.
  */
 
-import type { CheckSummary, ReviewItem, User } from './types.ts'
+import type { ApprovalSummary, CheckSummary, ReviewItem, User } from './types.ts'
 
 /**
  * Bumped whenever a ReviewItem gains a field the cards rely on, so a deck written
  * by an older build is discarded rather than drawn with holes in it.
  */
-export const DECK_CACHE_VERSION = 1
+export const DECK_CACHE_VERSION = 2
 
 export interface DeckCache {
   version: number
@@ -74,6 +74,15 @@ function isCheckSummary(value: unknown): value is CheckSummary {
   )
 }
 
+function isApprovalSummary(value: unknown): value is ApprovalSummary {
+  return (
+    isRecord(value) &&
+    typeof value['given'] === 'number' &&
+    typeof value['outcome'] === 'string' &&
+    (value['required'] === undefined || typeof value['required'] === 'number')
+  )
+}
+
 function isReviewItem(value: unknown): value is ReviewItem {
   if (!isRecord(value)) return false
   return (
@@ -93,6 +102,7 @@ function isReviewItem(value: unknown): value is ReviewItem {
     typeof value['myReviewState'] === 'string' &&
     Array.isArray(value['labels']) &&
     isUser(value['author']) &&
+    isApprovalSummary(value['approvals']) &&
     isCheckSummary(value['checks'])
   )
 }

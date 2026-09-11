@@ -33,6 +33,7 @@ import { Dialog } from './ui/dialog'
 import { Textarea } from './ui/input'
 import { Tooltip } from './ui/tooltip'
 import { useToast } from './ui/toast'
+import { ApprovalBadge } from './ApprovalBadge'
 import { CheckPill } from './CheckPill'
 import { ChecksPanel } from './ChecksPanel'
 import { DiffView } from './DiffView'
@@ -355,6 +356,7 @@ export function PullView({ item }: { item: ReviewItem }): React.JSX.Element {
 
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 <CheckPill checks={item.checks} />
+                <ApprovalBadge approvals={item.approvals} />
                 <Badge>
                   <GitBranch className="size-3" />
                   <span className="mono !text-[10.5px]">

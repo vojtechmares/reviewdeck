@@ -4,6 +4,7 @@ import type { Account, ReviewItem } from '@shared/types'
 import { cn, formatCount, relativeTime } from '@/lib/utils'
 import { Avatar } from './ui/avatar'
 import { Badge } from './ui/badge'
+import { ApprovalBadge } from './ApprovalBadge'
 import { CheckPill } from './CheckPill'
 import { ProviderIcon } from './ProviderIcon'
 
@@ -84,6 +85,8 @@ export function ReviewCard({ item, account, selected, onSelect }: ReviewCardProp
                 Commented
               </Badge>
             )}
+
+            <ApprovalBadge approvals={item.approvals} />
 
             {item.changedFiles !== undefined && (
               <Badge>

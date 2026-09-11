@@ -6,7 +6,15 @@
  */
 
 import { request, toOrigin } from '../http.ts'
-import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Session } from './types.ts'
+import {
+  countApprovers,
+  limitConcurrency,
+  makeItemId,
+  summariseApprovals,
+  summariseChecks,
+  type Provider,
+  type Session,
+} from './types.ts'
 import {
   forgejoThreads,
   parseForgejoThreadId,
@@ -78,6 +86,13 @@ interface FjReview {
   user: FjUser
   body: string
   submitted_at: string
+  dismissed?: boolean
+}
+
+interface FjBranchProtection {
+  rule_name?: string
+  branch_name?: string
+  required_approvals?: number
 }
 
 interface FjStatus {
@@ -163,27 +178,64 @@ async function loadChecks(session: Session, repo: string, sha: string, signal?: 
   }
 }
 
-async function myReviewState(
+/**
+ * How many approvals the target branch wants, or nothing when the token cannot
+ * ask. Listing branch protection is an administrator's call on Forgejo, so most
+ * reviewers get a 403 here and a card that says nothing is required - which is
+ * the honest answer, since nothing the app can see says otherwise.
+ *
+ * Rules are named after the branch they cover and can also be globs; only the
+ * exact name is looked up, and a glob rule reads as no rule at all.
+ */
+async function requiredApprovals(
+  session: Session,
+  repo: string,
+  branch: string,
+  memo: Map<string, Promise<number | undefined>>,
+  signal?: AbortSignal,
+): Promise<number | undefined> {
+  const key = `${repo}@${branch}`
+  let pending = memo.get(key)
+  if (!pending) {
+    pending = request<FjBranchProtection>(
+      api(session, `/repos/${repo}/branch_protections/${encodeURIComponent(branch)}`),
+      { headers: headers(session), signal },
+    )
+      .then((rule) => rule.required_approvals)
+      .catch(() => undefined)
+    memo.set(key, pending)
+  }
+  return pending
+}
+
+async function loadApprovals(
   session: Session,
   repo: string,
   number: number,
   signal?: AbortSignal,
-): Promise<MyReviewState> {
+): Promise<{ reviewState: MyReviewState; given: number }> {
   try {
     const reviews = await request<FjReview[]>(api(session, `/repos/${repo}/pulls/${number}/reviews`), {
       headers: headers(session),
       signal,
     })
+    const given = countApprovers(
+      reviews.map((review) => ({
+        login: review.user?.login,
+        state: review.dismissed ? 'DISMISSED' : review.state,
+      })),
+    )
     const mine = reviews.filter((review) => review.user?.login === session.account.username)
     for (let i = mine.length - 1; i >= 0; i--) {
-      if (mine[i].state === 'APPROVED') return 'approved'
-      if (mine[i].state === 'REQUEST_CHANGES') return 'changes_requested'
+      if (mine[i].state === 'APPROVED') return { reviewState: 'approved', given }
+      if (mine[i].state === 'REQUEST_CHANGES') return { reviewState: 'changes_requested', given }
     }
-    if (mine.some((review) => review.state === 'COMMENT')) return 'commented'
+    if (mine.some((review) => review.state === 'COMMENT')) return { reviewState: 'commented', given }
+    return { reviewState: 'pending', given }
   } catch {
     /* not fatal */
   }
-  return 'pending'
+  return { reviewState: 'pending', given: 0 }
 }
 
 export const forgejo: Provider = {
@@ -211,15 +263,18 @@ export const forgejo: Provider = {
       { headers: headers(session), signal },
     )
 
+    // One protection lookup per branch across the sync, not one per pull request.
+    const protections = new Map<string, Promise<number | undefined>>()
     return limitConcurrency(issues, 5, async (issue) => {
       const repo = repoName(issue)
       const pull = await request<FjPull>(api(session, `/repos/${repo}/pulls/${issue.number}`), {
         headers: headers(session),
         signal,
       })
-      const [checks, reviewState] = await Promise.all([
+      const [checks, { reviewState, given }, required] = await Promise.all([
         loadChecks(session, repo, pull.head.sha, signal),
-        myReviewState(session, repo, issue.number, signal),
+        loadApprovals(session, repo, issue.number, signal),
+        requiredApprovals(session, repo, pull.base.ref, protections, signal),
       ])
 
       const item: ReviewItem = {
@@ -239,6 +294,7 @@ export const forgejo: Provider = {
         targetBranch: pull.base.ref,
         labels: (pull.labels ?? []).map((label) => label.name),
         myReviewState: reviewState,
+        approvals: summariseApprovals(given, required),
         checks,
         additions: pull.additions,
         deletions: pull.deletions,

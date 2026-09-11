@@ -10,9 +10,11 @@ import { limitConcurrency, makeItemId, summariseChecks, type Provider, type Sess
 import { gitlabThreads, type GitlabDiscussion } from './threads.ts'
 import { gitlabDiscussionPayload, submitSequentially } from './submit.ts'
 import { countChanges } from '@shared/diff.ts'
+import { noApprovals } from '@shared/types.ts'
 import type {
   Account,
   AccountDraft,
+  ApprovalSummary,
   CheckRun,
   CheckStatus,
   CheckSummary,
@@ -85,6 +87,9 @@ interface GlJob {
 
 interface GlApproval {
   approved_by: { user: GlUser }[]
+  approvals_required?: number
+  approvals_left?: number
+  approved?: boolean
 }
 
 function headers(session: Session): Record<string, string> {
@@ -165,25 +170,38 @@ async function loadChecks(session: Session, projectId: string, iid: number, sign
   return { ...summariseChecks(runs), runs }
 }
 
-async function myReviewState(
+/**
+ * The user's own verdict and the merge request's standing, both off one call.
+ *
+ * GitLab settles its own approval rules - a rule naming who may approve, code
+ * owners, the lot - so `approvals_left` is its verdict and the count is only
+ * what the card shows beside it. A required count of zero is a project that asks
+ * for none, and the call failing is read the same way: approvals are a paid
+ * feature on some tiers, and a missing feature is not a review to hide.
+ */
+async function loadApprovals(
   session: Session,
   projectId: string,
   iid: number,
   signal?: AbortSignal,
-): Promise<MyReviewState> {
+): Promise<{ reviewState: MyReviewState; approvals: ApprovalSummary }> {
   try {
-    const approvals = await request<GlApproval>(
+    const result = await request<GlApproval>(
       api(session, `/projects/${encodeURIComponent(projectId)}/merge_requests/${iid}/approvals`),
       { headers: headers(session), signal },
     )
-    const approved = (approvals.approved_by ?? []).some(
-      (entry) => entry.user?.username === session.account.username,
-    )
-    if (approved) return 'approved'
+    const approvedBy = result.approved_by ?? []
+    const mine = approvedBy.some((entry) => entry.user?.username === session.account.username)
+    const required = result.approvals_required ?? 0
+    const given = approvedBy.length
+    const settled = result.approvals_left !== undefined ? result.approvals_left === 0 : result.approved
+    const approvals: ApprovalSummary = required
+      ? { given, required, outcome: settled ? 'satisfied' : 'pending' }
+      : { given, required: 0, outcome: 'none_required' }
+    return { reviewState: mine ? 'approved' : 'pending', approvals }
   } catch {
-    /* approvals are a premium feature on some tiers; treat as not-approved */
+    return { reviewState: 'pending', approvals: noApprovals() }
   }
-  return 'pending'
 }
 
 export const gitlab: Provider = {
@@ -214,9 +232,9 @@ export const gitlab: Provider = {
     return limitConcurrency(merges, 5, async (mr) => {
       const projectPath = pathFromReference(mr)
       const projectId = String(mr.project_id)
-      const [checks, reviewState] = await Promise.all([
+      const [checks, { reviewState, approvals }] = await Promise.all([
         loadChecks(session, projectId, mr.iid, signal).catch(() => emptyChecks()),
-        myReviewState(session, projectId, mr.iid, signal),
+        loadApprovals(session, projectId, mr.iid, signal),
       ])
 
       const item: ReviewItem = {
@@ -237,6 +255,7 @@ export const gitlab: Provider = {
         targetBranch: mr.target_branch,
         labels: mr.labels ?? [],
         myReviewState: reviewState,
+        approvals,
         checks,
       }
       return item

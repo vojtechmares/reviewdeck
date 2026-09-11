@@ -21,6 +21,7 @@ function review(number: number): ReviewItem {
     targetBranch: 'main',
     labels: [],
     myReviewState: 'pending',
+    approvals: { given: 0, outcome: 'none_required' },
     checks: { status: 'unknown', passed: 0, failed: 0, running: 0, total: 0, runs: [] },
   }
 }
