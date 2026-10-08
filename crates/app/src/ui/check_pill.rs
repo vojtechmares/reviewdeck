@@ -123,6 +123,16 @@ impl RenderOnce for CheckPill {
                 focus: cx.focus_handle().tab_stop(true),
             },
         );
+        // Debug scene: the first deck card's pill opens as if clicked. Cards are drawn
+        // top down, so the first pill to render with a card id is the first card's.
+        #[cfg(debug_assertions)]
+        if self.id.starts_with("pill-")
+            && !crate::scene::deck_pending(cx)
+            && crate::scene::pending(cx, crate::scene::Kind::Pill).is_some()
+        {
+            crate::scene::mark_done(cx, crate::scene::Kind::Pill);
+            state.update(cx, |state, _| state.open = true);
+        }
         let (open, focus) = {
             let state = state.read(cx);
             (state.open, state.focus.clone())

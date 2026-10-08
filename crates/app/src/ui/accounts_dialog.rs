@@ -204,7 +204,7 @@ impl AccountsDialog {
         self.set_kind(kind, guide(kind).host, cx);
     }
 
-    fn start_add(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn start_add(&mut self, cx: &mut Context<Self>) {
         self.set_kind(ProviderKind::Github, guide(ProviderKind::Github).host, cx);
         self.set_agent_placeholder(cx);
         self.adding = true;

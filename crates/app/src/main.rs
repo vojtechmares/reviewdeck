@@ -8,6 +8,8 @@
 #![allow(unexpected_cfgs)]
 
 mod platform;
+#[cfg(debug_assertions)]
+mod scene;
 mod state;
 mod ui;
 
@@ -95,12 +97,15 @@ fn open_main_window(cx: &mut App) -> gpui::Result<WindowHandle<AppView>> {
             appears_transparent: true,
             traffic_light_position: Some(point(px(18.), px(20.))),
         }),
-        // Milky glass: the window's blur, with the film painted on top.
-        window_background: WindowBackgroundAppearance::Blurred,
+        // Milky glass: native vibrancy under the content (installed below), with the
+        // film painted on top. Transparent rather than gpui's Blurred, whose stripped
+        // blur would sit over the vibrancy and let the desktop through.
+        window_background: WindowBackgroundAppearance::Transparent,
         app_id: Some(APP_ID.into()),
         ..WindowOptions::default()
     };
     cx.open_window(options, |window, cx| {
+        platform::vibrancy::install_under(window);
         // The system switching between light and dark while the app runs, with the
         // theme on "system": the renderer listened to `prefers-color-scheme`, here it
         // is the window's appearance. A change that leaves the resolved theme as it
@@ -334,6 +339,8 @@ fn main() {
         ui::theme::load_fonts(cx);
         ui::components::bind_keys(cx);
         ui::app_view::bind_keys(cx);
+        #[cfg(debug_assertions)]
+        scene::init(cx);
         install_menus(cx);
 
         if let Err(error) = open_main_window(cx) {

@@ -601,6 +601,39 @@ impl PullView {
         cx.notify();
     }
 
+    /// The pull-view steps of `REVIEWDECK_SCENE`, once the deck has settled on the
+    /// requested card and this pull request has loaded. Debug builds only.
+    #[cfg(debug_assertions)]
+    fn apply_scene(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::scene::{self, Kind, SceneTab, Step};
+
+        if !self.loaded || self.item.is_none() || scene::deck_pending(cx) {
+            return;
+        }
+        if let Some(Step::Tab(tab)) = scene::pending(cx, Kind::Tab) {
+            scene::mark_done(cx, Kind::Tab);
+            self.tab = match tab {
+                SceneTab::Files => Tab::Diff,
+                SceneTab::Checks => Tab::Checks,
+                SceneTab::Conversation => Tab::Conversation,
+            };
+            cx.notify();
+        }
+        if let Some(Step::Layout(mode)) = scene::pending(cx, Kind::Layout) {
+            // After the frame: a change made mid-draw is not painted until something else
+            // asks for a frame.
+            cx.defer_in(window, move |this, _, cx| {
+                scene::mark_done(cx, Kind::Layout);
+                this.set_diff_view(mode, cx);
+            });
+        }
+        if let Some(Step::Verdict(verdict)) = scene::pending(cx, Kind::Verdict) {
+            scene::mark_done(cx, Kind::Verdict);
+            self.verdict = Some(verdict);
+            cx.notify();
+        }
+    }
+
     fn can_submit(&self, cx: &App) -> bool {
         (self.verdict == Some(ReviewVerdict::Approve)
             || !self.drafts.is_empty()
@@ -1489,6 +1522,8 @@ fn window_wide(dialog: impl IntoElement, window: &Window) -> impl IntoElement {
 
 impl Render for PullView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(debug_assertions)]
+        self.apply_scene(window, cx);
         let colors = cx.theme().colors;
 
         // The drafts are the store's, and the diff adds to them without telling this view,
