@@ -82,7 +82,7 @@ impl RenderOnce for ReviewCard {
             .items_center()
             .w_full()
             .text_size(rpx(11.5))
-            .line_height(rpx(16.))
+            .line_height(rpx(17.25))
             .text_color(muted)
             .child(
                 div()
@@ -124,7 +124,7 @@ impl RenderOnce for ReviewCard {
             .mt(rpx(2.))
             .line_clamp(2)
             .text_size(rpx(13.))
-            .line_height(rpx(18.))
+            .line_height(rpx(17.875))
             .font_weight(if selected {
                 FontWeight::SEMIBOLD
             } else {

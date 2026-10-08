@@ -208,6 +208,7 @@ impl Render for SyncLabel {
             .min_w_0()
             .truncate()
             .text_size(rpx(11.5))
+            .line_height(rpx(17.25))
             .text_color(muted);
         #[cfg(test)]
         let label = label.debug_selector({
@@ -821,6 +822,7 @@ impl AppView {
                     .child(
                         div()
                             .text_size(rpx(13.5))
+                            .line_height(rpx(20.25))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Reviewdeck"),
                     )
@@ -1036,7 +1038,7 @@ impl AppView {
             .px(rpx(12.))
             .py(rpx(8.))
             .text_size(rpx(11.))
-            .line_height(rpx(16.))
+            .line_height(rpx(16.5))
             .text_color(muted)
             .child(tag(
                 format!(
@@ -1200,7 +1202,8 @@ impl Render for AppView {
             .w(rpx(384.))
             .h_full()
             .bg(colors.surface_muted)
-            .border_r_1()
+            // `glass-quiet` carries a hairline all the way round, not just on the right.
+            .border_1()
             .border_color(colors.border)
             .when(self.show_filters, |d| d.child(self.filter_panel(cx)))
             .child(deck_list)

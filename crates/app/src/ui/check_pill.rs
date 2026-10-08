@@ -169,10 +169,11 @@ impl RenderOnce for CheckPill {
         let panel = if checks.total == 0 {
             div()
                 .w(rpx(288.))
+                .my(rpx(-4.))
                 .px(rpx(12.))
                 .py(rpx(10.))
                 .text_size(rpx(11.5))
-                .line_height(rpx(15.))
+                .line_height(rpx(15.8125))
                 .text_color(colors.muted_foreground)
                 .child("No status checks reported for this branch.")
         } else {
@@ -184,14 +185,21 @@ impl RenderOnce for CheckPill {
                 .border_color(colors.border)
                 .px(rpx(12.))
                 .py(rpx(8.))
-                .child(check_icon(
-                    checks.status,
-                    14.,
-                    check_tone(checks.status, &colors),
-                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .mr(rpx(8.))
+                        .size(rpx(14.))
+                        .child(check_icon(
+                            checks.status,
+                            14.,
+                            check_tone(checks.status, &colors),
+                        )),
+                )
                 .child(
                     div()
                         .text_size(rpx(12.))
+                        .line_height(rpx(18.))
                         .font_weight(FontWeight::MEDIUM)
                         .child(label),
                 )
@@ -199,6 +207,7 @@ impl RenderOnce for CheckPill {
                     div()
                         .ml_auto()
                         .text_size(rpx(11.))
+                        .line_height(rpx(16.5))
                         .text_color(colors.muted_foreground)
                         .child(format!("{}/{} passed", checks.passed, checks.total)),
                 );
@@ -234,7 +243,7 @@ impl RenderOnce for CheckPill {
                                         div()
                                             .truncate()
                                             .text_size(rpx(11.))
-                                            .line_height(rpx(15.))
+                                            .line_height(rpx(15.125))
                                             .text_color(colors.muted_foreground)
                                             .child(description),
                                     )
@@ -242,7 +251,7 @@ impl RenderOnce for CheckPill {
                             ),
                     )
             });
-            div().w(rpx(288.)).child(header).child(
+            div().w(rpx(288.)).my(rpx(-4.)).child(header).child(
                 div()
                     .id(SharedString::from(format!("{}-runs", self.id)))
                     .max_h(rpx(320.))
