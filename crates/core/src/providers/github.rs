@@ -2289,10 +2289,17 @@ mod tests {
     }
 
     /// The query texts are what GitHub is sent, and a changed character is a changed
-    /// request, so they are pinned against the TypeScript they were ported from.
+    /// request, so they are pinned against the TypeScript they were ported from - while
+    /// it is still in the repository. Without it the request-level tests below hold them.
     #[test]
     fn graphql_texts_are_byte_for_byte_the_typescript_ones() {
-        let ts = include_str!("../../../../src/main/providers/github.ts");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../src/main/providers/github.ts"
+        );
+        let Ok(ts) = std::fs::read_to_string(path) else {
+            return;
+        };
         for text in [
             THREADS_QUERY,
             DECISION_QUERY,
