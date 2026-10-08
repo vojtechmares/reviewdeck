@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The template for Reviewdeck.app/Contents/Info.plist. scripts/bundle.sh copies
+  it into the bundle and replaces the @PLACEHOLDERS@:
+
+    @VERSION@        the release version, prerelease suffix included (1.2.3-rc.1)
+    @BUILD_VERSION@  the same version without the prerelease suffix (1.2.3)
+    @YEAR@           the year the bundle was built, for the copyright line
+
+  Keep it a valid plist with the placeholders in place, so plutil can lint the
+  template itself.
+-->
+<plist version="1.0">
+  <dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleIdentifier</key>
+    <string>cz.mares.reviewdeck</string>
+    <key>CFBundleName</key>
+    <string>Reviewdeck</string>
+    <key>CFBundleDisplayName</key>
+    <string>Reviewdeck</string>
+    <key>CFBundleExecutable</key>
+    <string>Reviewdeck</string>
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <!-- What the user sees in Finder and About; the tag, verbatim. -->
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <!-- Apple wants up to three period-separated integers here, so a
+         prerelease suffix is dropped. -->
+    <key>CFBundleVersion</key>
+    <string>@BUILD_VERSION@</string>
+    <!-- Matches the cask's `depends_on macos: :monterey` and the deployment
+         target bundle.sh builds with. -->
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <!-- gpui creates its own NSApplication subclass and never goes through
+         NSApplicationMain, so this is informational; it is the conventional
+         value for an AppKit app. -->
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- Reviewdeck is a light workload: let macOS keep it on the integrated
+         GPU instead of waking the discrete one. -->
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <!-- Follow the system appearance; electron-builder's darkModeSupport
+         wrote the same key. -->
+    <key>NSRequiresAquaSystemAppearance</key>
+    <false/>
+    <!-- A regular Dock app. Closing the window keeps it alive in the menu bar,
+         but it is not a menu-bar-only agent. -->
+    <key>LSUIElement</key>
+    <false/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © @YEAR@ Vojtěch Mareš</string>
+  </dict>
+</plist>

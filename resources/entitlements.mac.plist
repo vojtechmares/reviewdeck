@@ -1,16 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened runtime. scripts/bundle.sh signs with this file
+  even though it is empty, so granting something later is a one-line change.
+
+  Reviewdeck is a single native executable, and none of what the Electron build
+  needed applies to it:
+
+  - com.apple.security.cs.allow-jit and allow-unsigned-executable-memory were
+    for V8. Nothing here generates code at run time; gpui's Metal shaders are
+    compiled at build time and embedded in the binary.
+  - com.apple.security.cs.disable-library-validation was for Electron's
+    frameworks inside the bundle, which carried no team ID. The executable only
+    links system libraries (scripts/verify-app.sh checks that), and those pass
+    library validation.
+  - com.apple.security.network.client only means something inside the App
+    Sandbox, which Reviewdeck does not adopt; outside it, it is ignored.
+
+  The Keychain, local notifications and SMAppService (launch at login) need no
+  entitlement for an app outside the sandbox.
+-->
 <plist version="1.0">
-  <dict>
-    <key>com.apple.security.cs.allow-jit</key>
-    <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-    <!-- The bundle is ad-hoc signed, so its frameworks carry no team ID and
-         the hardened runtime's library validation would refuse to load them. -->
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-    <key>com.apple.security.network.client</key>
-    <true/>
-  </dict>
+  <dict/>
 </plist>
