@@ -12,6 +12,7 @@ use gpui::{
     App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder,
+    relative,
 };
 use reviewdeck_core::model::{Account, ReviewWindow};
 use reviewdeck_core::review_window::{
@@ -261,7 +262,6 @@ enum Field {
 fn hint(text: &'static str, cx: &App) -> gpui::Div {
     div()
         .text_size(rpx(11.))
-        .line_height(rpx(16.))
         .text_color(cx.theme().colors.muted_foreground)
         .child(text)
 }
@@ -294,7 +294,6 @@ impl ScheduleDialog {
                                 div()
                                     .truncate()
                                     .text_size(rpx(13.))
-                                    .line_height(rpx(20.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(summary.clone()),
                             )
@@ -302,7 +301,6 @@ impl ScheduleDialog {
                                 d.child(
                                     div()
                                         .text_size(rpx(11.5))
-                                        .line_height(rpx(16.))
                                         .text_color(colors.muted_foreground)
                                         .child("Turned off"),
                                 )
@@ -311,7 +309,6 @@ impl ScheduleDialog {
                                 d.child(
                                     div()
                                         .text_size(rpx(11.5))
-                                        .line_height(rpx(16.))
                                         .text_color(colors.bad)
                                         .child("Every account it named has been signed out, so it can never fire."),
                                 )
@@ -359,7 +356,7 @@ impl ScheduleDialog {
             .child(
                 div()
                     .text_size(rpx(11.))
-                    .line_height(rpx(18.))
+                    .line_height(relative(1.625))
                     .text_color(colors.muted_foreground)
                     .child("A window only fires while Reviewdeck is running. If you want the morning roll-up to be there before you are, turn on “Launch Reviewdeck at login” in Settings."),
             )
@@ -557,7 +554,7 @@ impl Render for ScheduleDialog {
                 div()
                     .font_family(UI_FONT)
                     .text_size(rpx(13.))
-                    .line_height(rpx(20.))
+                    .line_height(relative(1.5))
                     .text_color(colors.foreground)
                     .child(body),
             )

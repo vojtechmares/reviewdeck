@@ -16,7 +16,7 @@ use gpui::{
     App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder,
-    px,
+    px, relative,
 };
 use reviewdeck_core::model::{
     Account, AccountDraft, AccountStatus, DEFAULT_AGENT_COMMAND, ProviderKind,
@@ -332,7 +332,6 @@ fn hint(text: impl Into<SharedString>, cx: &App) -> gpui::Div {
     div()
         .mt(rpx(4.))
         .text_size(rpx(11.))
-        .line_height(rpx(16.))
         .text_color(cx.theme().colors.muted_foreground)
         .child(text.into())
 }
@@ -363,7 +362,6 @@ impl AccountsDialog {
                         .items_center()
                         .gap(rpx(6.))
                         .text_size(rpx(13.))
-                        .line_height(rpx(20.))
                         .font_weight(FontWeight::MEDIUM)
                         .child(
                             div()
@@ -376,7 +374,6 @@ impl AccountsDialog {
                     div()
                         .truncate()
                         .text_size(rpx(11.5))
-                        .line_height(rpx(16.))
                         .text_color(colors.muted_foreground)
                         .child(format!(
                             "{} · {}",
@@ -392,7 +389,6 @@ impl AccountsDialog {
                             .items_start()
                             .gap(rpx(4.))
                             .text_size(rpx(11.5))
-                            .line_height(rpx(16.))
                             .text_color(colors.bad)
                             .child(
                                 div().mt(px(1.)).flex_none().child(
@@ -524,7 +520,6 @@ impl AccountsDialog {
             .items_center()
             .gap(rpx(4.))
             .text_size(rpx(11.))
-            .line_height(rpx(16.))
             .text_color(colors.muted_foreground)
             .child("Needs")
             .child(
@@ -658,7 +653,7 @@ impl Render for AccountsDialog {
                 div()
                     .font_family(UI_FONT)
                     .text_size(rpx(13.))
-                    .line_height(rpx(20.))
+                    .line_height(relative(1.5))
                     .text_color(colors.foreground)
                     .child(body),
             )

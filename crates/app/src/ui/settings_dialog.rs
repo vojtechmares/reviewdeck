@@ -8,6 +8,7 @@ use gpui::{
     App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder,
+    relative,
 };
 use reviewdeck_core::model::{DEFAULT_AGENT_COMMAND, DiffViewMode, Settings, ThemeMode};
 
@@ -271,7 +272,6 @@ fn field(label: &'static str, tag: &'static str, control: impl IntoElement) -> g
 fn note(text: &'static str, cx: &App) -> gpui::AnyElement {
     div()
         .text_size(rpx(11.))
-        .line_height(rpx(16.))
         .text_color(cx.theme().colors.muted_foreground)
         .child(text)
         .into_any_element()
@@ -474,7 +474,6 @@ impl Render for SettingsDialog {
                         rows.push(
                             div()
                                 .text_size(rpx(11.))
-                                .line_height(rpx(16.))
                                 .text_color(colors.bad)
                                 .child(error.clone())
                                 .into_any_element(),
@@ -506,7 +505,7 @@ impl Render for SettingsDialog {
                 div()
                     .font_family(UI_FONT)
                     .text_size(rpx(13.))
-                    .line_height(rpx(20.))
+                    .line_height(relative(1.5))
                     .text_color(colors.foreground)
                     .child(sections),
             )
@@ -532,7 +531,6 @@ fn titled(title: &'static str, rows: Vec<gpui::AnyElement>, cx: &App) -> gpui::D
             div()
                 .mb(rpx(8.))
                 .text_size(rpx(11.))
-                .line_height(rpx(16.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.muted_foreground)
                 .child(title.to_uppercase()),
