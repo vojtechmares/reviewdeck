@@ -57,6 +57,20 @@ pub fn check_icon(status: CheckStatus, size: f32, color: Hsla) -> Icon {
     if spin { icon.spin() } else { icon }
 }
 
+/// The words in the badge: `2 failed`, `1 running`, `5/6`, or the status itself when the
+/// host reported no runs at all.
+fn pill_text(checks: &CheckSummary) -> String {
+    if checks.total > 0 {
+        match checks.status {
+            CheckStatus::Failed => format!("{} failed", checks.failed),
+            CheckStatus::Running => format!("{} running", checks.running),
+            _ => format!("{}/{}", checks.passed, checks.total),
+        }
+    } else {
+        meta(checks.status).1.to_string()
+    }
+}
+
 /// What a pill remembers between frames: whether its panel is open, and the focus
 /// handle that makes it a tab stop.
 struct PillState {
@@ -114,15 +128,7 @@ impl RenderOnce for CheckPill {
             (state.open, state.focus.clone())
         };
 
-        let text = if checks.total > 0 {
-            match checks.status {
-                CheckStatus::Failed => format!("{} failed", checks.failed),
-                CheckStatus::Running => format!("{} running", checks.running),
-                _ => format!("{}/{}", checks.passed, checks.total),
-            }
-        } else {
-            label.to_string()
-        };
+        let text = pill_text(&checks);
 
         let toggle = state.clone();
         let trigger = div()
@@ -144,6 +150,11 @@ impl RenderOnce for CheckPill {
                     .child(check_icon(checks.status, 12., tone_color(tone, cx)))
                     .child(text),
             );
+        #[cfg(test)]
+        let trigger = trigger.debug_selector({
+            let id = self.id.clone();
+            move || format!("{id}")
+        });
 
         let panel = if checks.total == 0 {
             div()
@@ -230,6 +241,12 @@ impl RenderOnce for CheckPill {
             )
         };
 
+        #[cfg(test)]
+        let panel = panel.debug_selector({
+            let id = self.id.clone();
+            move || format!("{id}-panel")
+        });
+
         let dismiss = state.clone();
         Popover::new(SharedString::from(format!("{}-popover", self.id)))
             .trigger(trigger)
@@ -241,5 +258,51 @@ impl RenderOnce for CheckPill {
                     cx.notify();
                 });
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use reviewdeck_core::model::CheckRun;
+
+    use super::*;
+
+    fn summary(status: CheckStatus, passed: u32, failed: u32, running: u32) -> CheckSummary {
+        CheckSummary {
+            status,
+            total: passed + failed + running,
+            passed,
+            failed,
+            running,
+            runs: Vec::<CheckRun>::new(),
+        }
+    }
+
+    #[test]
+    fn the_badge_counts_what_matters_for_the_status() {
+        assert_eq!(
+            pill_text(&summary(CheckStatus::Failed, 3, 2, 0)),
+            "2 failed"
+        );
+        assert_eq!(
+            pill_text(&summary(CheckStatus::Running, 3, 0, 1)),
+            "1 running"
+        );
+        assert_eq!(pill_text(&summary(CheckStatus::Passed, 4, 0, 0)), "4/4");
+        assert_eq!(pill_text(&summary(CheckStatus::Unknown, 1, 0, 0)), "1/1");
+    }
+
+    #[test]
+    fn a_pill_with_no_runs_says_the_status() {
+        assert_eq!(
+            pill_text(&summary(CheckStatus::Unknown, 0, 0, 0)),
+            "Unknown"
+        );
+        assert_eq!(pill_text(&summary(CheckStatus::Passed, 0, 0, 0)), "Passed");
+        assert_eq!(pill_text(&summary(CheckStatus::Failed, 0, 0, 0)), "Failed");
+        assert_eq!(
+            pill_text(&summary(CheckStatus::Running, 0, 0, 0)),
+            "Running"
+        );
     }
 }

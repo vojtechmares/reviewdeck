@@ -15,6 +15,7 @@ pub mod instance;
 pub mod login_item;
 pub mod notify;
 pub mod tray;
+pub mod window_drag;
 
 use std::ffi::{CStr, c_void};
 use std::os::raw::c_char;

@@ -21,6 +21,29 @@ pub fn approval_badge(
     id: impl Into<ElementId>,
     cx: &App,
 ) -> impl IntoElement {
+    let (tone, count, state) = describe(approvals);
+    div()
+        .id(id)
+        .flex_none()
+        .tooltip(tooltip(format!("Approvals from any reviewer\n{state}")))
+        .child(
+            Badge::new()
+                .tone(tone)
+                .child(
+                    Icon::new(IconName::UserCheck)
+                        .size(12.)
+                        .color(tone_color(tone, cx)),
+                )
+                .child(count),
+        )
+}
+
+fn plural(count: u32, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+}
+
+/// The tone, the count and the sentence the tooltip carries for an approval summary.
+fn describe(approvals: &ApprovalSummary) -> (BadgeTone, String, String) {
     let tone = match approvals.outcome {
         ApprovalOutcome::Satisfied => BadgeTone::Ok,
         ApprovalOutcome::Pending => BadgeTone::Busy,
@@ -48,22 +71,60 @@ pub fn approval_badge(
             plural(approvals.given, "approval")
         ),
     };
-    div()
-        .id(id)
-        .flex_none()
-        .tooltip(tooltip(format!("Approvals from any reviewer\n{state}")))
-        .child(
-            Badge::new()
-                .tone(tone)
-                .child(
-                    Icon::new(IconName::UserCheck)
-                        .size(12.)
-                        .color(tone_color(tone, cx)),
-                )
-                .child(count),
-        )
+    (tone, count, state)
 }
 
-fn plural(count: u32, noun: &str) -> String {
-    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(given: u32, required: Option<u32>, outcome: ApprovalOutcome) -> ApprovalSummary {
+        ApprovalSummary {
+            given,
+            required,
+            outcome,
+        }
+    }
+
+    #[test]
+    fn a_host_that_asks_for_none_is_grey_and_shows_the_bare_count() {
+        let (tone, count, state) = describe(&summary(1, None, ApprovalOutcome::NoneRequired));
+        assert_eq!(tone, BadgeTone::Neutral);
+        assert_eq!(count, "1");
+        assert_eq!(
+            state,
+            "1 approval given. The host requires none, or will not say what it requires."
+        );
+        let (_, count, state) = describe(&summary(0, Some(0), ApprovalOutcome::NoneRequired));
+        assert_eq!(count, "0", "a requirement of zero is no requirement");
+        assert!(state.starts_with("0 approvals given."));
+    }
+
+    #[test]
+    fn a_host_still_waiting_is_amber_over_what_it_asks_for() {
+        let (tone, count, state) = describe(&summary(1, Some(2), ApprovalOutcome::Pending));
+        assert_eq!(tone, BadgeTone::Busy);
+        assert_eq!(count, "1/2");
+        assert_eq!(
+            state,
+            "1 of 2 required approvals given. Still waiting on somebody."
+        );
+        let (_, count, state) = describe(&summary(2, None, ApprovalOutcome::Pending));
+        assert_eq!(count, "2");
+        assert_eq!(
+            state,
+            "2 approvals given. Still short of what the host requires."
+        );
+    }
+
+    #[test]
+    fn a_host_with_what_it_wants_is_green() {
+        let (tone, count, state) = describe(&summary(2, Some(2), ApprovalOutcome::Satisfied));
+        assert_eq!(tone, BadgeTone::Ok);
+        assert_eq!(count, "2/2");
+        assert_eq!(
+            state,
+            "2 approvals given. Every approval the host requires is there."
+        );
+    }
 }
