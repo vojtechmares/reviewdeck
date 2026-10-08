@@ -23,6 +23,8 @@ const UNBUNDLED: &str = "Launch at login only works when Reviewdeck runs from it
 
 /// Where the main app stands as a login item (SMAppServiceStatus, plus the cases in
 /// which there is no service to ask).
+// Read by the settings dialog to show the live state; unused until it lands.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginItemStatus {
     /// Not registered.
@@ -69,6 +71,7 @@ unsafe fn main_app_service() -> Result<id, &'static str> {
 }
 
 /// Where the app stands as a login item.
+#[allow(dead_code)]
 pub fn status() -> LoginItemStatus {
     let _pool = AutoreleasePool::new();
     // SAFETY: inside a pool; -status is a plain NSInteger getter.
@@ -84,6 +87,7 @@ pub fn status() -> LoginItemStatus {
 }
 
 /// Whether the app opens at login now.
+#[allow(dead_code)]
 pub fn is_enabled() -> bool {
     status() == LoginItemStatus::Enabled
 }
