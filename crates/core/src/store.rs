@@ -184,7 +184,13 @@ impl VaultData {
 
 /// The app's data directory: `~/Library/Application Support/reviewdeck`, the
 /// Electron app's `userData`, so both read the same vault.
+///
+/// `REVIEWDECK_DATA_DIR` points it somewhere else entirely, so a development run
+/// (demo mode included) can be kept away from the real vault and its tokens.
 pub fn data_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("REVIEWDECK_DATA_DIR").filter(|dir| !dir.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
     let home = std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .ok_or_else(|| msg("Could not find the home folder to keep Reviewdeck's data in."))?;
