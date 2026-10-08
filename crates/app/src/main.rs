@@ -17,12 +17,12 @@ use futures::StreamExt;
 use futures::future::BoxFuture;
 use gpui::http_client::{AsyncBody, HttpClient, Request, Response, Url, anyhow, http::HeaderValue};
 use gpui::{
-    App, AppContext, AsyncApp, Context, Entity, Global, KeyBinding, Menu, MenuItem, OsAction,
-    Subscription, SystemMenuType, TitlebarOptions, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowHandle, WindowOptions, actions, div, point, prelude::*, px, size,
+    App, AppContext, AsyncApp, Global, KeyBinding, Menu, MenuItem, OsAction,
+    SystemMenuType, TitlebarOptions, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowHandle, WindowOptions, actions, point, px, size,
 };
 use reviewdeck_core::http::{Http, Method, RequestOptions};
-use reviewdeck_core::model::{ReviewItem, ThemeMode};
+use reviewdeck_core::model::ThemeMode;
 use reviewdeck_core::store::{Vault, data_dir};
 use reviewdeck_core::tray_icon::{TRAY_ICON_POINTS, tray_icon_png};
 
@@ -30,7 +30,8 @@ use crate::platform::notify::Notifier;
 use crate::platform::tray::Tray;
 use crate::platform::{PlatformEvent, appearance, instance};
 use crate::state::{AppDeps, AppEvent, AppState, GlobalState, Notify};
-use crate::ui::theme::{ActiveTheme, Theme, rpx, set_zoom};
+use crate::ui::app_view::AppView;
+use crate::ui::theme::{Theme, set_zoom};
 
 /// The bundle identifier, which macOS groups windows and notifications by.
 const APP_ID: &str = "cz.mares.reviewdeck";
@@ -74,96 +75,8 @@ fn zoom_factor(level: f32) -> f32 {
     1.2f32.powf(level)
 }
 
-/// Stands in for the app view until it is ported. This is the seam: the integration
-/// agent swaps the body of [`RootView`] for `AppView`.
-pub struct RootView {
-    state: Entity<AppState>,
-    _subscriptions: Vec<Subscription>,
-}
-
-impl RootView {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state = cx.global::<GlobalState>().0.clone();
-        let subscriptions = vec![
-            cx.observe(&state, |_, _, cx| cx.notify()),
-            // Follows the OS theme switching while the app is on "System".
-            cx.observe_window_appearance(window, |_, _, cx| apply_theme(cx)),
-        ];
-        RootView {
-            state,
-            _subscriptions: subscriptions,
-        }
-    }
-}
-
-impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.theme().colors;
-        let deck = self.state.read(cx).deck();
-        let waiting = deck.items.len();
-        let header = format!(
-            "{waiting} review{} waiting{}",
-            if waiting == 1 { "" } else { "s" },
-            if deck.syncing { " - syncing" } else { "" }
-        );
-
-        let rows = deck.items.iter().map(|item: &ReviewItem| {
-            div()
-                .flex()
-                .gap(rpx(10.))
-                .py(rpx(4.))
-                .child(
-                    div()
-                        .w(rpx(260.))
-                        .child(format!("{} #{}", item.repo, item.number)),
-                )
-                .child(div().flex_1().child(item.title.clone()))
-                .child(div().w(rpx(90.)).child(format!("{:?}", item.checks.status)))
-        });
-
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .gap(rpx(12.))
-            .p(rpx(16.))
-            .bg(cx.theme().colors.background)
-            .text_color(colors.foreground)
-            .font_family(ui::theme::UI_FONT)
-            .text_size(rpx(13.5))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(rpx(12.))
-                    .child(div().flex_1().child(header))
-                    .child(
-                        div()
-                            .id("debug-refresh")
-                            .px(rpx(10.))
-                            .py(rpx(5.))
-                            .rounded(rpx(6.))
-                            .border_1()
-                            .border_color(colors.border)
-                            .child("Refresh")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let state = this.state.clone();
-                                state.update(cx, |state, cx| state.refresh(cx).detach());
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .id("debug-list")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .children(rows),
-            )
-    }
-}
-
 /// Opens the main window. Closing it keeps the app running in the menu bar.
-fn open_main_window(cx: &mut App) -> gpui::Result<WindowHandle<RootView>> {
+fn open_main_window(cx: &mut App) -> gpui::Result<WindowHandle<AppView>> {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1280.), px(860.)), cx)),
         window_min_size: Some(size(px(940.), px(600.))),
@@ -177,7 +90,7 @@ fn open_main_window(cx: &mut App) -> gpui::Result<WindowHandle<RootView>> {
         app_id: Some(APP_ID.into()),
         ..WindowOptions::default()
     };
-    cx.open_window(options, |window, cx| cx.new(|cx| RootView::new(window, cx)))
+    cx.open_window(options, |window, cx| cx.new(|cx| AppView::new(window, cx)))
 }
 
 /// Brings the window forward, reopening it when it has been closed. What the menu bar
@@ -335,7 +248,9 @@ fn main() {
     };
     let http = Http::new();
 
-    let app = gpui::Application::new().with_http_client(Arc::new(ImageHttp {
+    let app = gpui::Application::new()
+        .with_assets(ui::icons::Assets)
+        .with_http_client(Arc::new(ImageHttp {
         http: http.clone(),
         user_agent: HeaderValue::from_static("Reviewdeck"),
     }));
@@ -394,6 +309,8 @@ fn main() {
         state.update(cx, |state, cx| state.hydrate(cx));
 
         apply_theme(cx);
+        ui::components::bind_keys(cx);
+        ui::app_view::bind_keys(cx);
         install_menus(cx);
 
         if let Err(error) = open_main_window(cx) {
