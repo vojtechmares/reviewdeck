@@ -1,0 +1,25 @@
+[package]
+name = "reviewdeck"
+description = "Aggregate code review requests across every Git host you work with."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "reviewdeck"
+path = "src/main.rs"
+
+[features]
+default = ["runtime-shaders"]
+# Compile gpui's Metal shaders at runtime, for machines without the Metal
+# toolchain. A release build on a machine that has it can opt out with
+# `--no-default-features`.
+runtime-shaders = ["gpui/runtime_shaders"]
+
+[dependencies]
+# `font-kit` is gpui's macOS text system (CoreText). Without it gpui falls back to
+# a no-op text system and draws no text at all.
+gpui = { workspace = true, features = ["font-kit"] }
+reviewdeck-core.workspace = true
