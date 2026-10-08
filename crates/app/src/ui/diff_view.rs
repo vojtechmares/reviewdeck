@@ -41,9 +41,11 @@ use reviewdeck_core::model::{
 
 use crate::state::{AppState, GlobalState};
 use crate::ui::app_view::toast;
+use crate::ui::code::WrappedCode;
 use crate::ui::components::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::components::glass::GlassExt;
 use crate::ui::components::input::{TextInput, TextInputEvent};
+use crate::ui::components::scroll::thumb;
 use crate::ui::components::toast::ToastKind;
 use crate::ui::draft_view::DraftCard;
 use crate::ui::icons::{Icon, IconName};
@@ -61,6 +63,9 @@ const CODE_LINE: f32 = 12. * 1.55;
 const SMALL_SIZE: f32 = 11.;
 const SMALL_LINE: f32 = 11. * 1.55;
 
+/// `::-webkit-scrollbar { width: 10px }`: the track the pane reserves on its right.
+const SCROLLBAR_WIDTH: f32 = 10.;
+
 /// `w-11`: one line-number gutter.
 const GUTTER_WIDTH: f32 = 44.;
 /// `p-4` around the files and `gap-3` between them.
@@ -71,6 +76,20 @@ const FILE_GAP: f32 = 12.;
 /// in an 8px box with a 4px margin, here it is painted over two blank characters so a
 /// wrapped line starts under it, as the browser's did.
 const MARKER_PREFIX: &str = "  ";
+
+/// `font-variant-ligatures: none` of the `.mono` rule: no ligatures and no contextual
+/// alternates, which would otherwise stretch a `-` before a digit.
+fn no_ligatures<E: Styled>(mut element: E) -> E {
+    element
+        .text_style()
+        .get_or_insert_with(Default::default)
+        .font_features = Some(gpui::FontFeatures(Arc::new(vec![
+        ("liga".to_string(), 0),
+        ("clig".to_string(), 0),
+        ("calt".to_string(), 0),
+    ])));
+    element
+}
 
 /// How far past the viewport the list builds rows, so scrolling never shows blanks.
 const OVERDRAW: f32 = 600.;
@@ -624,17 +643,6 @@ impl DiffView {
             match found {
                 Some((h, l)) if self.files[0].open => {
                     self.pick(0, h, side, l, window, cx);
-                    // The line above the composer, with a little context before it.
-                    if let Some(ix) = self
-                        .entries
-                        .iter()
-                        .position(|entry| matches!(entry.item, Item::Composer(0, _)))
-                    {
-                        self.list.scroll_to(gpui::ListOffset {
-                            item_ix: ix.saturating_sub(4),
-                            offset_in_item: px(0.),
-                        });
-                    }
                 }
                 _ => eprintln!("REVIEWDECK_SCENE: no commentable line {line} in the first file"),
             }
@@ -1105,7 +1113,7 @@ impl DiffView {
 
     fn hunk_header(&self, f: usize, h: usize, cx: &App) -> AnyElement {
         let colors = cx.theme().colors;
-        div()
+        no_ligatures(div())
             .w_full()
             .bg(colors.muted)
             .px(rpx(12.))
@@ -1253,23 +1261,23 @@ impl DiffView {
             .and_then(|lines| lines.get(l))
             .cloned()
             .unwrap_or_default();
-        let mut styled = StyledText::new(text);
+        let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
         let (Colour::Ready { styles, .. }
         | Colour::Pending {
             previous: Some(styles),
             ..
         }) = &file.colour
         else {
-            return self.code_body(colors, tint, marker, styled);
+            return self.code_body(colors, tint, marker, WrappedCode::new(text, highlights));
         };
         if let Some(runs) = styles
             .get(h)
             .and_then(|lines| lines.get(l))
             .and_then(Option::as_ref)
         {
-            styled = styled.with_highlights(runs.iter().cloned());
+            highlights = runs.iter().cloned().collect();
         }
-        self.code_body(colors, tint, marker, styled)
+        self.code_body(colors, tint, marker, WrappedCode::new(text, highlights))
     }
 
     fn code_body(
@@ -1277,7 +1285,7 @@ impl DiffView {
         colors: crate::ui::theme::Colors,
         tint: Option<Hsla>,
         marker: &'static str,
-        styled: StyledText,
+        styled: WrappedCode,
     ) -> Div {
         div()
             .relative()
@@ -1296,7 +1304,7 @@ impl DiffView {
                 )
             })
             .child(
-                div()
+                no_ligatures(div())
                     .relative()
                     .px(rpx(8.))
                     .font_family(mono_font())
@@ -1509,6 +1517,8 @@ impl DiffView {
                         div()
                             .font_family(mono_font())
                             .text_size(rpx(SMALL_SIZE))
+                            // `.mono`'s 1.55 line height makes the label row 17px tall.
+                            .line_height(rpx(SMALL_LINE))
                             .child(target.path.clone()),
                     ),
             )
@@ -1529,7 +1539,9 @@ impl DiffView {
                     .items_center()
                     .justify_end()
                     .gap(rpx(6.))
-                    .mt(rpx(6.))
+                    // `mt-1.5` plus the 6px the browser leaves under an inline-block
+                    // textarea (its baseline gap).
+                    .mt(rpx(12.))
                     .child(
                         div()
                             .mr_auto()
@@ -1597,13 +1609,40 @@ impl Render for DiffView {
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, window, cx| this.finish(window, cx)),
             )
-            .child(
-                list(
-                    self.list.clone(),
-                    cx.processor(|this, ix, window, cx| this.render_entry(ix, window, cx)),
+            .child({
+                // The pane's own scrollbar (`::-webkit-scrollbar`): a classic 10px
+                // track that takes its width from the content, with the slim thumb in it.
+                let thumb = thumb(
+                    self.list.scroll_px_offset_for_scrollbar().y,
+                    self.list.max_offset_for_scrollbar().height,
+                    self.list.viewport_bounds().size.height,
                 )
-                .size_full(),
-            )
+                .map(|(top, height)| {
+                    div()
+                        .absolute()
+                        .top(top)
+                        .right(rpx(3.))
+                        .w(rpx(4.))
+                        .h(height)
+                        .rounded_full()
+                        .bg(colors.border_strong)
+                });
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        div().size_full().pr(rpx(SCROLLBAR_WIDTH)).child(
+                            list(
+                                self.list.clone(),
+                                cx.processor(|this, ix, window, cx| {
+                                    this.render_entry(ix, window, cx)
+                                }),
+                            )
+                            .size_full(),
+                        ),
+                    )
+                    .children(thumb)
+            })
             .into_any_element()
     }
 }
