@@ -16,7 +16,7 @@
 //! The material follows the window's effective appearance, which follows
 //! `NSApp.appearance` (see `appearance.rs`), so it turns light or dark with the theme.
 
-use cocoa::base::{NO, id, nil};
+use cocoa::base::{id, nil};
 use cocoa::foundation::NSRect;
 use objc::{class, msg_send, sel, sel_impl};
 
@@ -91,8 +91,8 @@ unsafe fn install(ns_window: id) {
         let _: () = msg_send![view, setBlendingMode: BLENDING_BEHIND_WINDOW];
         let _: () = msg_send![view, setState: STATE_ACTIVE];
         let _: () = msg_send![view, setAutoresizingMask: RESIZE_WITH_SUPERVIEW];
-        // It is a backdrop: it must never take a click or the keyboard from gpui.
-        let _: () = msg_send![view, setRefusesFirstResponder: !NO];
+        // A backdrop never takes the keyboard (an NSView refuses first responder by
+        // default) or a click: it sits below gpui's view, which covers the window.
         let _: () = msg_send![content, addSubview: view positioned: BELOW relativeTo: nil];
         let _: id = msg_send![view, autorelease];
     }
