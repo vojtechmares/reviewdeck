@@ -6,6 +6,7 @@ dist/
 *.log
 .vite/
 tsconfig.*.tsbuildinfo
+/target
 
 # guard against an accidental `npm install`
 package-lock.json
