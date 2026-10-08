@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::FutureExt;
+use futures::channel::oneshot;
 use futures::future::{LocalBoxFuture, join_all};
 use gpui::{
     App, AsyncApp, ClipboardItem, Context, Entity, EventEmitter, Global, Image, ImageFormat, Task,
@@ -171,13 +172,24 @@ pub struct AppDeps {
     pub tray: Option<Tray>,
 }
 
-/// An authenticated image: a fetch in flight, the decoded image, or a failure that
-/// is not retried (every frame would otherwise start the same request).
+/// An authenticated image: a fetch in flight, the decoded image, or a failure.
+///
+/// A failure is remembered, with when it happened, so that a frame does not start
+/// the same request again - but only for [`IMAGE_RETRY_MS`]. The browser retried a
+/// broken `<img>` whenever it was rendered again, and a host that was down for a
+/// minute must not leave its avatars blank until the app restarts.
 enum ImageSlot {
     Pending,
     Ready(Arc<Image>),
-    Failed,
+    Failed(i64),
 }
+
+/// How long a failed image is left alone before the next render may ask again.
+const IMAGE_RETRY_MS: i64 = 60_000;
+
+/// How many decoded images are kept. A description can embed many large uploads; the
+/// oldest are dropped (and fetched again if they are wanted) beyond this.
+const MAX_CACHED_IMAGES: usize = 256;
 
 /// The deck, the drafts and everything the main process did, as one entity.
 pub struct AppState {
@@ -201,6 +213,8 @@ pub struct AppState {
     /// twice.
     opening_windows: bool,
     images: HashMap<(String, String), ImageSlot>,
+    /// The keys of the `Ready` images, oldest first, for the cap.
+    image_order: Vec<(String, String)>,
     notify: Option<Box<dyn Notify>>,
     tray: Option<Tray>,
     /// Set while the sync timer runs: the interval it fires at.
@@ -238,6 +252,7 @@ impl AppState {
             primed: false,
             opening_windows: false,
             images: HashMap::new(),
+            image_order: Vec::new(),
             notify: deps.notify,
             tray: deps.tray,
             sync_interval: None,
@@ -299,7 +314,11 @@ impl AppState {
                     },
                     &token,
                 )?;
-                this.update(cx, |state, cx| state.refresh(cx).detach()).ok();
+                this.update(cx, |state, cx| {
+                    state.forget_failed_images(None);
+                    state.refresh(cx).detach()
+                })
+                .ok();
                 Ok(account)
             },
         )
@@ -359,7 +378,11 @@ impl AppState {
                 if !new_token.is_empty() {
                     vault.set_token(&id, &new_token)?;
                 }
-                this.update(cx, |state, cx| state.refresh(cx).detach()).ok();
+                this.update(cx, |state, cx| {
+                    state.forget_failed_images(Some(&id));
+                    state.refresh(cx).detach()
+                })
+                .ok();
                 vault
                     .get_account(&id)
                     .ok_or_else(|| msg("That account is gone."))
@@ -370,6 +393,8 @@ impl AppState {
     /// `accounts:remove`. Returns the accounts that remain.
     pub fn remove_account(&mut self, id: &str, cx: &mut Context<Self>) -> Result<Vec<Account>> {
         self.vault.remove_account(id)?;
+        self.images.retain(|(account, _), _| account != id);
+        self.image_order.retain(|(account, _)| account != id);
         self.refresh(cx).detach();
         Ok(self.accounts())
     }
@@ -520,18 +545,23 @@ impl AppState {
             .map(|account| fetch_account(self.remote.clone(), self.vault.clone(), account))
             .collect();
 
-        cx.spawn(
-            async move |this: WeakEntity<Self>, cx: &mut AsyncApp| -> Result<DeckState> {
-                let results = join_all(fetches).await;
-                match this.update(cx, |state, cx| {
-                    state.finish_sync(results, submissions_at_start, signed, cx);
-                    state.deck()
-                }) {
-                    Ok(deck) => Ok(deck),
-                    Err(_) => Err(closing()),
-                }
-            },
-        )
+        // Detached, with the caller holding only a receiver: dropping the returned
+        // task (a caller that does not wait) must not abandon the sync half way and
+        // leave `syncing` set for ever, which would turn every later refresh into a
+        // no-op.
+        let (done, result) = oneshot::channel();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let results = join_all(fetches).await;
+            let deck = this.update(cx, |state, cx| {
+                state.finish_sync(results, submissions_at_start, signed, cx);
+                state.deck()
+            });
+            done.send(deck.map_err(|_| closing())).ok();
+        })
+        .detach();
+        cx.spawn(async move |_: WeakEntity<Self>, _: &mut AsyncApp| {
+            result.await.unwrap_or_else(|_| Err(closing()))
+        })
     }
 
     fn finish_sync(
@@ -541,6 +571,20 @@ impl AppState {
         signed: String,
         cx: &mut Context<Self>,
     ) {
+        // An account removed while the fan-out was in flight must not come back with
+        // the answer it was already asked for. (The TypeScript let it back in until
+        // the next sync pruned it, and the menu bar counted it in the meantime.)
+        let connected = self.vault.list_accounts();
+        self.items
+            .retain(|(id, _)| connected.iter().any(|account| account.id == *id));
+        self.statuses.retain(|status| {
+            connected
+                .iter()
+                .any(|account| account.id == status.account_id)
+        });
+        let results = results
+            .into_iter()
+            .filter(|(id, _)| connected.iter().any(|account| account.id == *id));
         for (account_id, result) in results {
             match result {
                 Ok(items) => {
@@ -734,19 +778,25 @@ impl AppState {
         let remote = self.remote.clone();
         let verdict = submission.verdict;
         let body = submission.body;
-        cx.spawn(
-            async move |this: WeakEntity<Self>, cx: &mut AsyncApp| -> Result<()> {
-                let result = remote
-                    .submit_review(session, item.clone(), verdict, body, pending)
-                    .await;
-                match this.update(cx, |state, cx| {
+        // Detached, with the caller holding only a receiver: a review that has gone
+        // out to the host must always reach `finish_submit`, or its drafts would stay
+        // and the next submit would post them a second time.
+        let (done, result) = oneshot::channel();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = remote
+                .submit_review(session, item.clone(), verdict, body, pending)
+                .await;
+            let outcome = this
+                .update(cx, |state, cx| {
                     state.finish_submit(&item, verdict, result, cx)
-                }) {
-                    Ok(outcome) => outcome,
-                    Err(_) => Err(closing()),
-                }
-            },
-        )
+                })
+                .unwrap_or_else(|_| Err(closing()));
+            done.send(outcome).ok();
+        })
+        .detach();
+        cx.spawn(async move |_: WeakEntity<Self>, _: &mut AsyncApp| {
+            result.await.unwrap_or_else(|_| Err(closing()))
+        })
     }
 
     fn finish_submit(
@@ -1044,6 +1094,10 @@ impl AppState {
             || next.hide_fully_approved != before.hide_fully_approved
             || next.hide_drafts != before.hide_drafts
             || next.show_menu_bar_count != before.show_menu_bar_count
+            // The menu bar's quiet line follows the master toggle and the schedule; the
+            // TypeScript left it stale until the next sync.
+            || next.notifications_enabled != before.notifications_enabled
+            || next.review_windows != before.review_windows
         {
             self.publish(cx);
         }
@@ -1067,9 +1121,13 @@ impl AppState {
     /// `app:openExternal`. Only http(s) reaches the OS: a provider-supplied URL is
     /// untrusted input.
     pub fn open_external(&self, url: &str, cx: &App) {
-        let lower = url.trim().to_ascii_lowercase();
-        if lower.starts_with("https://") || lower.starts_with("http://") {
-            cx.open_url(url.trim());
+        // Parsed the way `new URL(url)` was: an unparsable string, or any scheme but
+        // http(s), goes nowhere.
+        if let Ok(parsed) = gpui::http_client::Url::parse(url.trim())
+            && matches!(parsed.scheme(), "http" | "https")
+            && parsed.host_str().is_some()
+        {
+            cx.open_url(parsed.as_str());
         }
     }
 
@@ -1106,8 +1164,9 @@ impl AppState {
         let key = (account_id.to_string(), url.to_string());
         match self.images.get(&key) {
             Some(ImageSlot::Ready(image)) => return Some(image.clone()),
-            Some(ImageSlot::Pending | ImageSlot::Failed) => return None,
-            None => {}
+            Some(ImageSlot::Pending) => return None,
+            Some(ImageSlot::Failed(at)) if self.now_ms() - *at < IMAGE_RETRY_MS => return None,
+            Some(ImageSlot::Failed(_)) | None => {}
         }
 
         let accounts: Vec<ImageAccount> = self
@@ -1132,6 +1191,7 @@ impl AppState {
                 let http = self.http.clone();
                 let url = url.to_string();
                 cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    let failed = ImageSlot::Failed(i64::MIN);
                     let slot =
                         match images::fetch_authenticated(&http, &account, &token, &url).await {
                             Ok((bytes, content_type)) => {
@@ -1139,13 +1199,17 @@ impl AppState {
                                     Some(format) => {
                                         ImageSlot::Ready(Arc::new(Image::from_bytes(format, bytes)))
                                     }
-                                    None => ImageSlot::Failed,
+                                    None => failed,
                                 }
                             }
-                            Err(_) => ImageSlot::Failed,
+                            Err(_) => failed,
                         };
                     this.update(cx, |state, cx| {
-                        state.images.insert(key, slot);
+                        let slot = match slot {
+                            ImageSlot::Failed(_) => ImageSlot::Failed(state.now_ms()),
+                            other => other,
+                        };
+                        state.cache_image(key, slot);
                         cx.notify();
                     })
                     .ok();
@@ -1153,10 +1217,33 @@ impl AppState {
                 .detach();
             }
             _ => {
-                self.images.insert(key, ImageSlot::Failed);
+                let at = self.now_ms();
+                self.images.insert(key, ImageSlot::Failed(at));
             }
         }
         None
+    }
+
+    /// Stores a landed image, dropping the oldest ones beyond the cap.
+    fn cache_image(&mut self, key: (String, String), slot: ImageSlot) {
+        let ready = matches!(slot, ImageSlot::Ready(_));
+        self.image_order.retain(|entry| *entry != key);
+        if ready {
+            self.image_order.push(key.clone());
+        }
+        self.images.insert(key, slot);
+        while self.image_order.len() > MAX_CACHED_IMAGES {
+            let oldest = self.image_order.remove(0);
+            self.images.remove(&oldest);
+        }
+    }
+
+    /// Forgets the failed images of an account (all of them when `account_id` is
+    /// `None`): a new token, or a repaired host, deserves a fresh try.
+    fn forget_failed_images(&mut self, account_id: Option<&str>) {
+        self.images.retain(|(account, _), slot| {
+            !(matches!(slot, ImageSlot::Failed(_)) && account_id.is_none_or(|id| id == account))
+        });
     }
 
     // ----- timers ---------------------------------------------------------------
@@ -1284,6 +1371,10 @@ impl AppState {
         if self.opening_windows {
             return;
         }
+        // The menu bar's "quiet until" line is a function of the clock as much as of
+        // the deck: redraw it on the tick (unchanged content is a no-op) so it does not
+        // keep promising a silence that ended minutes ago.
+        self.update_tray();
         let settings = self.vault.settings();
         // The master toggle wins over everything in the schedule.
         if !settings.notifications_enabled {
@@ -1696,6 +1787,10 @@ mod tests {
         reviews: Mutex<HashMap<String, Vec<ReviewItem>>>,
         failing: Mutex<HashSet<String>>,
         submit: Mutex<Option<Result<()>>>,
+        /// What a check refresh answers; an error when unscripted.
+        checks: Mutex<Option<CheckSummary>>,
+        check_calls: AtomicUsize,
+        submit_calls: AtomicUsize,
     }
 
     impl FakeRemote {
@@ -1714,6 +1809,10 @@ mod tests {
 
         fn set_submit(&self, outcome: Result<()>) {
             *locked(&self.submit) = Some(outcome);
+        }
+
+        fn set_checks(&self, checks: CheckSummary) {
+            *locked(&self.checks) = Some(checks);
         }
     }
 
@@ -1738,7 +1837,11 @@ mod tests {
             _session: Session,
             _item: ReviewItem,
         ) -> LocalBoxFuture<'static, Result<CheckSummary>> {
-            Box::pin(async { Err(msg("not scripted")) })
+            self.check_calls.fetch_add(1, Ordering::Relaxed);
+            let answer = locked(&self.checks)
+                .clone()
+                .ok_or_else(|| msg("not scripted"));
+            Box::pin(async move { answer })
         }
 
         fn submit_review(
@@ -1749,6 +1852,7 @@ mod tests {
             _body: String,
             _drafts: Vec<DraftComment>,
         ) -> LocalBoxFuture<'static, Result<()>> {
+            self.submit_calls.fetch_add(1, Ordering::Relaxed);
             let answer = locked(&self.submit).clone().unwrap_or(Ok(()));
             Box::pin(async move { answer })
         }
@@ -2364,5 +2468,411 @@ mod tests {
             error.as_deref(),
             Some("That account is no longer signed in.")
         );
+    }
+
+    fn checks(status: CheckStatus) -> CheckSummary {
+        CheckSummary {
+            status,
+            passed: 0,
+            failed: 0,
+            running: u32::from(status == CheckStatus::Running),
+            total: 1,
+            runs: Vec::new(),
+        }
+    }
+
+    fn with_checks(mut item: ReviewItem, status: CheckStatus) -> ReviewItem {
+        item.checks = checks(status);
+        item
+    }
+
+    #[gpui::test]
+    fn a_refresh_nobody_waits_for_still_finishes(cx: &mut TestAppContext) {
+        let vault = test_vault();
+        let account = add_account(&vault, "Work GitHub");
+        let remote = Arc::new(FakeRemote::default());
+        remote.set_reviews(&account.id, vec![review(&account.id, 1)]);
+        let state = cx.new(|cx| AppState::new(deps(vault.clone(), remote.clone(), None), cx));
+
+        // The caller drops the task at once. Cancelling the sync with it would leave
+        // `syncing` set and turn every later refresh into a no-op.
+        drop(state.update(cx, |s, cx| s.refresh(cx)));
+        cx.run_until_parked();
+
+        let deck = state.read_with(cx, |s, _| s.deck());
+        assert!(!deck.syncing, "the sync ran to its end");
+        assert_eq!(deck.items.len(), 1);
+        assert!(deck.synced);
+    }
+
+    #[gpui::test]
+    fn a_submission_nobody_waits_for_still_clears_the_drafts(cx: &mut TestAppContext) {
+        let vault = test_vault();
+        let account = add_account(&vault, "Work GitHub");
+        let remote = Arc::new(FakeRemote::default());
+        remote.set_reviews(&account.id, vec![review(&account.id, 1)]);
+        let state = cx.new(|cx| AppState::new(deps(vault.clone(), remote.clone(), None), cx));
+        run(cx, &state, |s, cx| s.refresh(cx)).expect("the first sync completes");
+        let item_id = item_id_of(&account.id, 1);
+        let _ = state.update(cx, |s, cx| s.add_draft(draft(&item_id, "Once only."), cx));
+
+        drop(state.update(cx, |s, cx| {
+            s.submit_review(
+                ReviewSubmission {
+                    item_id: item_id.clone(),
+                    verdict: ReviewVerdict::RequestChanges,
+                    body: String::new(),
+                },
+                cx,
+            )
+        }));
+        cx.run_until_parked();
+
+        assert_eq!(remote.submit_calls.load(Ordering::Relaxed), 1);
+        assert!(
+            state.read_with(cx, |s, _| s.drafts(&item_id)).is_empty(),
+            "a review that went out must not leave its drafts to be posted again"
+        );
+        let state_now = state
+            .read_with(cx, |s, _| s.find(&item_id))
+            .map(|i| i.my_review_state);
+        assert_eq!(state_now, Some(MyReviewState::ChangesRequested));
+    }
+
+    #[gpui::test]
+    fn an_account_removed_during_a_sync_does_not_come_back(cx: &mut TestAppContext) {
+        let vault = test_vault();
+        let work = add_account(&vault, "Work GitHub");
+        let home = add_account(&vault, "Home GitHub");
+        let remote = Arc::new(FakeRemote::default());
+        remote.set_reviews(&work.id, vec![review(&work.id, 1)]);
+        remote.set_reviews(&home.id, vec![review(&home.id, 2)]);
+        let state = cx.new(|cx| AppState::new(deps(vault.clone(), remote.clone(), None), cx));
+
+        let task = state.update(cx, |s, cx| s.refresh(cx));
+        // After the fan-out went out, before its answers are applied.
+        if let Err(error) = vault.remove_account(&home.id) {
+            panic!("the account is removed: {error}");
+        }
+        let deck = cx.executor().block_test(task).expect("the sync completes");
+
+        assert!(deck.items.iter().all(|item| item.account_id == work.id));
+        assert!(deck.statuses.iter().all(|s| s.account_id == work.id));
+    }
+
+    #[gpui::test]
+    fn a_divergent_review_is_noticed_and_can_be_acknowledged(cx: &mut TestAppContext) {
+        let vault = test_vault();
+        let account = add_account(&vault, "Work GitHub");
+        let remote = Arc::new(FakeRemote::default());
+        remote.set_reviews(&account.id, vec![review(&account.id, 1)]);
+        let state = cx.new(|cx| AppState::new(deps(vault.clone(), remote.clone(), None), cx));
+        run(cx, &state, |s, cx| s.refresh(cx)).expect("the first sync completes");
+        let item_id = item_id_of(&account.id, 1);
+        let _ = state.update(cx, |s, cx| s.add_draft(draft(&item_id, "Pending."), cx));
+        assert!(!state.read_with(cx, |s, _| s.drafts_diverged(&item_id)));
+
+        // The reviewer approves in a browser: the next sync reports it.
+        let mut approved = review(&account.id, 1);
+        approved.my_review_state = MyReviewState::Approved;
+        remote.set_reviews(&account.id, vec![approved]);
+        run(cx, &state, |s, cx| s.refresh(cx)).expect("the second sync completes");
+        assert!(state.read_with(cx, |s, _| s.drafts_diverged(&item_id)));
+
+        let still = state.update(cx, |s, cx| s.acknowledge_drafts(&item_id, cx));
+        assert!(!still, "the mark goes");
+        assert_eq!(
+            state.read_with(cx, |s, _| s.drafts(&item_id)).len(),
+            1,
+            "not one draft is touched"
+        );
+    }
+
+    #[gpui::test]
+    fn running_checks_are_polled_until_none_is_running(cx: &mut TestAppContext) {
+        let vault = test_vault();
+        let account = add_account(&vault, "Work GitHub");
+        let remote = Arc::new(FakeRemote::default());
+        remote.set_reviews(
+            &account.id,
+            vec![with_checks(review(&account.id, 1), CheckStatus::Running)],
+        );
+        let state = cx.new(|cx| AppState::new(deps(vault.clone(), remote.clone(), None), cx));
+        run(cx, &state, |s, cx| s.refresh(cx)).expect("the sync completes");
+        let item_id = item_id_of(&account.id, 1);
+
+        // The floor is 15 seconds, whatever the setting says.
+        let saved = state.update(cx, |s, cx| {
+            s.set_settings(|settings| settings.check_poll_interval = 1, cx)
+        });
+        assert!(saved.is_ok());
+        cx.executor().advance_clock(Duration::from_secs(14));
+        cx.run_until_parked();
+        assert_eq!(
+            remote.check_calls.load(Ordering::Relaxed),
+            0,
+            "not before the floor"
+        );
+
+        // Still running: polled again, a poll later.
+        remote.set_checks(checks(CheckStatus::Running));
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        assert_eq!(remote.check_calls.load(Ordering::Relaxed), 1);
+        cx.executor().advance_clock(Duration::from_secs(15));
+        cx.run_until_parked();
+        assert_eq!(remote.check_calls.load(Ordering::Relaxed), 2);
+
+        // Finished: patched into the deck, and the polling stops.
+        remote.set_checks(checks(CheckStatus::Passed));
+        cx.executor().advance_clock(Duration::from_secs(15));
+        cx.run_until_parked();
+        assert_eq!(remote.check_calls.load(Ordering::Relaxed), 3);
+        let status = state
+            .read_with(cx, |s, _| s.find(&item_id))
+            .map(|item| item.checks.status);
+        assert_eq!(status, Some(CheckStatus::Passed));
+        cx.executor().advance_clock(Duration::from_secs(120));
+        cx.run_until_parked();
+        assert_eq!(
+            remote.check_calls.load(Ordering::Relaxed),
+            3,
+            "nothing left to poll"
+        );
+    }
+
+    #[gpui::test]
+    fn a_failed_check_poll_keeps_the_previous_status_and_tries_again(cx: &mut TestAppContext) {
+        let vault = test_vault();
+        let account = add_account(&vault, "Work GitHub");
+        let remote = Arc::new(FakeRemote::default());
+        remote.set_reviews(
+            &account.id,
+            vec![with_checks(review(&account.id, 1), CheckStatus::Running)],
+        );
+        let state = cx.new(|cx| AppState::new(deps(vault.clone(), remote.clone(), None), cx));
+        run(cx, &state, |s, cx| s.refresh(cx)).expect("the sync completes");
+        let item_id = item_id_of(&account.id, 1);
+
+        // Unscripted: every poll fails.
+        for expected in 1..=2 {
+            cx.executor().advance_clock(Duration::from_secs(61));
+            cx.run_until_parked();
+            assert_eq!(remote.check_calls.load(Ordering::Relaxed), expected);
+        }
+        let status = state
+            .read_with(cx, |s, _| s.find(&item_id))
+            .map(|item| item.checks.status);
+        assert_eq!(status, Some(CheckStatus::Running));
+    }
+
+    /// 2026-10-08 is a Thursday: a 09:00 window on day 4.
+    fn morning_window(accounts: Vec<String>) -> ReviewWindow {
+        ReviewWindow {
+            id: "morning".into(),
+            enabled: true,
+            days: vec![4],
+            start: "09:00".into(),
+            end: "09:30".into(),
+            minimum: 1,
+            accounts,
+        }
+    }
+
+    fn clocked(
+        vault: Arc<Vault>,
+        remote: Arc<FakeRemote>,
+        notify: Option<Box<dyn Notify>>,
+        now: std::rc::Rc<std::cell::Cell<i64>>,
+    ) -> AppDeps {
+        AppDeps {
+            clock: Some(Box::new(move || now.get())),
+            ..deps(vault, remote, notify)
+        }
+    }
+
+    #[gpui::test]
+    fn a_review_window_opens_once_with_one_roll_up(cx: &mut TestAppContext) {
+        let Some(early) = local_to_ms(2026, 10, 8, 8, 0) else {
+            panic!("a local time");
+        };
+        let Some(open) = local_to_ms(2026, 10, 8, 9, 0) else {
+            panic!("a local time");
+        };
+        let vault = test_vault();
+        let account = add_account(&vault, "Work GitHub");
+        let saved = vault.save_settings(|settings| {
+            settings.review_windows = vec![morning_window(Vec::new())];
+        });
+        assert!(saved.is_ok());
+        let remote = Arc::new(FakeRemote::default());
+        remote.set_reviews(
+            &account.id,
+            vec![review(&account.id, 1), review(&account.id, 2)],
+        );
+        let shown = Recorder::default();
+        let now = std::rc::Rc::new(std::cell::Cell::new(early));
+        let state = cx.new(|cx| {
+            AppState::new(
+                clocked(
+                    vault.clone(),
+                    remote.clone(),
+                    Some(Box::new(shown.clone())),
+                    now.clone(),
+                ),
+                cx,
+            )
+        });
+
+        state.update(cx, |s, cx| s.start(cx));
+        cx.run_until_parked();
+        assert!(shown.shown().is_empty(), "the first sync is silent");
+
+        // Before the window: a tick does nothing.
+        cx.executor()
+            .advance_clock(Duration::from_millis(WINDOW_TICK_MS));
+        cx.run_until_parked();
+        assert!(shown.shown().is_empty());
+
+        // The clock enters the window: the next tick states what is waiting.
+        now.set(open + 5_000);
+        cx.executor()
+            .advance_clock(Duration::from_millis(WINDOW_TICK_MS));
+        cx.run_until_parked();
+        let first = shown.shown();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].title, "2 reviews waiting");
+        assert_eq!(first[0].target, None);
+        assert_eq!(first[0].subtitle, None);
+        assert!(first[0].body.contains("#1") && first[0].body.contains("#2"));
+
+        // Recorded as fired: later ticks inside the span stay quiet.
+        cx.executor()
+            .advance_clock(Duration::from_millis(WINDOW_TICK_MS));
+        cx.run_until_parked();
+        assert_eq!(shown.shown().len(), 1);
+    }
+
+    #[gpui::test]
+    fn a_quiet_account_is_not_announced_before_its_window_and_notifications_off_wins(
+        cx: &mut TestAppContext,
+    ) {
+        let Some(early) = local_to_ms(2026, 10, 8, 8, 0) else {
+            panic!("a local time");
+        };
+        let vault = test_vault();
+        let work = add_account(&vault, "Work GitHub");
+        let home = add_account(&vault, "Home GitHub");
+        let saved = vault.save_settings(|settings| {
+            settings.review_windows = vec![morning_window(vec![work.id.clone()])];
+        });
+        assert!(saved.is_ok());
+        let remote = Arc::new(FakeRemote::default());
+        let shown = Recorder::default();
+        let now = std::rc::Rc::new(std::cell::Cell::new(early));
+        let state = cx.new(|cx| {
+            AppState::new(
+                clocked(
+                    vault.clone(),
+                    remote.clone(),
+                    Some(Box::new(shown.clone())),
+                    now.clone(),
+                ),
+                cx,
+            )
+        });
+        run(cx, &state, |s, cx| s.refresh(cx)).expect("the first sync completes");
+
+        // A new review on each account: the window silences only the one it covers.
+        remote.set_reviews(&work.id, vec![review(&work.id, 1)]);
+        remote.set_reviews(&home.id, vec![review(&home.id, 2)]);
+        run(cx, &state, |s, cx| s.refresh(cx)).expect("the second sync completes");
+        let seen = shown.shown();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].body.contains("Review number 2"));
+
+        // Master toggle off: a further arrival is recorded and not announced.
+        let saved = state.update(cx, |s, cx| {
+            s.set_settings(|settings| settings.notifications_enabled = false, cx)
+        });
+        assert!(saved.is_ok());
+        remote.set_reviews(&home.id, vec![review(&home.id, 2), review(&home.id, 3)]);
+        run(cx, &state, |s, cx| s.refresh(cx)).expect("the third sync completes");
+        assert_eq!(shown.shown().len(), 1);
+    }
+
+    #[gpui::test]
+    fn a_failed_image_is_retried_after_a_minute_not_every_frame(cx: &mut TestAppContext) {
+        let vault = test_vault();
+        let account = add_account(&vault, "Work GitHub");
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&[0u8; 24]);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let http = Http::mock(move |_| {
+            if counter.fetch_add(1, Ordering::Relaxed) == 0 {
+                MockResponse::new(503, Vec::new())
+            } else {
+                MockResponse::new(200, png.clone()).header("content-type", "image/png")
+            }
+        });
+        let now = std::rc::Rc::new(std::cell::Cell::new(1_000_000_i64));
+        let clock = now.clone();
+        let state = cx.new(|cx| {
+            AppState::new(
+                AppDeps {
+                    http,
+                    vault: vault.clone(),
+                    remote: Some(Arc::new(FakeRemote::default())),
+                    demo: false,
+                    clock: Some(Box::new(move || clock.get())),
+                    notify: None,
+                    tray: None,
+                },
+                cx,
+            )
+        });
+        let url = "https://github.com/octocat.png";
+        let ask = |cx: &mut TestAppContext| {
+            let image = state.update(cx, |s, cx| s.authenticated_image(&account.id, url, cx));
+            cx.run_until_parked();
+            image
+        };
+
+        assert!(ask(cx).is_none());
+        assert!(ask(cx).is_none(), "asked again at once: no second request");
+        assert_eq!(requests.load(Ordering::Relaxed), 1);
+
+        now.set(1_000_000 + IMAGE_RETRY_MS + 1);
+        assert!(ask(cx).is_none(), "the retry itself is a miss");
+        assert_eq!(requests.load(Ordering::Relaxed), 2);
+        assert!(ask(cx).is_some(), "and this time it landed");
+    }
+
+    #[gpui::test]
+    fn the_image_cache_is_bounded(cx: &mut TestAppContext) {
+        let vault = test_vault();
+        let state = cx.new(|cx| {
+            AppState::new(
+                deps(vault.clone(), Arc::new(FakeRemote::default()), None),
+                cx,
+            )
+        });
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&[0u8; 24]);
+        state.update(cx, |s, _| {
+            for n in 0..(MAX_CACHED_IMAGES + 10) {
+                let image = Arc::new(Image::from_bytes(ImageFormat::Png, png.clone()));
+                s.cache_image(("a".into(), format!("u{n}")), ImageSlot::Ready(image));
+            }
+        });
+        let (kept, oldest_gone) = state.read_with(cx, |s, _| {
+            (
+                s.images.len(),
+                !s.images.contains_key(&("a".to_string(), "u0".to_string())),
+            )
+        });
+        assert_eq!(kept, MAX_CACHED_IMAGES);
+        assert!(oldest_gone);
     }
 }

@@ -26,9 +26,10 @@ use reviewdeck_core::model::ThemeMode;
 use reviewdeck_core::store::{Vault, data_dir};
 use reviewdeck_core::tray_icon::{TRAY_ICON_POINTS, tray_icon_png};
 
+use crate::platform::instance::SecondLaunchWatcher;
 use crate::platform::notify::Notifier;
 use crate::platform::tray::Tray;
-use crate::platform::{PlatformEvent, appearance, instance};
+use crate::platform::{PlatformEvent, appearance, instance, restore_miniaturized_windows};
 use crate::state::{AppDeps, AppEvent, AppState, GlobalState, Notify};
 use crate::ui::app_view::AppView;
 use crate::ui::theme::{Theme, set_zoom};
@@ -56,11 +57,20 @@ actions!(
     ]
 );
 
-// The Edit menu's items are AppKit's own, routed to whichever text field has focus.
-actions!(edit, [Undo, Redo, Cut, Copy, Paste, SelectAll]);
+// The Edit menu's items are the text field's own actions (`text_input::Copy` and
+// friends), not actions of this crate: a menu item is enabled only while something in
+// the focus chain handles its action, and the field is what handles these. Their key
+// bindings live with the field, scoped to it.
+use crate::ui::components::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 
-/// Holds the single-instance lock for the life of the app. Dropping it releases it.
-struct InstanceLock(#[allow(dead_code)] Option<std::fs::File>);
+/// Holds the single-instance lock for the life of the app, and the listener that
+/// hears a second launch. Dropping it releases both.
+struct InstanceLock {
+    #[allow(dead_code)]
+    lock: Option<std::fs::File>,
+    #[allow(dead_code)]
+    second_launch: Option<SecondLaunchWatcher>,
+}
 
 impl Global for InstanceLock {}
 
@@ -90,7 +100,16 @@ fn open_main_window(cx: &mut App) -> gpui::Result<WindowHandle<AppView>> {
         app_id: Some(APP_ID.into()),
         ..WindowOptions::default()
     };
-    cx.open_window(options, |window, cx| cx.new(|cx| AppView::new(window, cx)))
+    cx.open_window(options, |window, cx| {
+        // The system switching between light and dark while the app runs, with the
+        // theme on "system": the renderer listened to `prefers-color-scheme`, here it
+        // is the window's appearance. A change that leaves the resolved theme as it
+        // was does nothing.
+        window
+            .observe_window_appearance(|_window, cx| apply_theme(cx))
+            .detach();
+        cx.new(|cx| AppView::new(window, cx))
+    })
 }
 
 /// Brings the window forward, reopening it when it has been closed. What the menu bar
@@ -98,6 +117,8 @@ fn open_main_window(cx: &mut App) -> gpui::Result<WindowHandle<AppView>> {
 fn show_window(cx: &mut App) {
     match cx.windows().first().copied() {
         Some(handle) => {
+            // Out of the Dock first, as `window.restore()` did for a minimised window.
+            restore_miniaturized_windows();
             cx.update_window(handle, |_, window, _| window.activate_window())
                 .ok();
         }
@@ -232,7 +253,11 @@ fn main() {
     // handled by quitting; LaunchServices has focused that process already.
     let lock = match instance::acquire_single_instance_lock(&data_dir) {
         Ok(Some(file)) => Some(file),
-        Ok(None) => return,
+        Ok(None) => {
+            // `app.on('second-instance', show)`: ask the running one to come forward.
+            instance::announce_second_launch(&data_dir);
+            return;
+        }
         Err(error) => {
             eprintln!("Reviewdeck could not lock its data directory: {error}");
             None
@@ -256,23 +281,20 @@ fn main() {
         }));
 
     // Dock click with no visible window reopens it.
-    app.on_reopen(|cx: &mut App| {
-        if cx.windows().is_empty()
-            && let Err(error) = open_main_window(cx)
-        {
-            eprintln!("Reviewdeck could not open its window: {error:#}");
-        }
-        cx.activate(true);
-    });
+    // A minimised window counts as not visible to AppKit, so this also fires for one:
+    // `activate` in the TypeScript restored it rather than making a second window.
+    app.on_reopen(show_window);
 
     app.run(move |cx: &mut App| {
-        cx.set_global(InstanceLock(lock));
+        let (events, mut platform_events) = futures::channel::mpsc::unbounded();
+        cx.set_global(InstanceLock {
+            lock,
+            second_launch: SecondLaunchWatcher::new(&data_dir, events.clone()),
+        });
 
         let settings = vault.settings();
         // Like nativeTheme.themeSource at launch: before the first window draws.
         appearance::set_app_appearance(settings.theme);
-
-        let (events, mut platform_events) = futures::channel::mpsc::unbounded();
 
         // Installed here: gpui calls this from applicationDidFinishLaunching:, which is
         // early enough for the click that launched the app.
@@ -381,12 +403,6 @@ fn install_menus(cx: &mut App) {
         KeyBinding::new("cmd--", ZoomOut, None),
         KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
         KeyBinding::new("cmd-m", Minimize, None),
-        KeyBinding::new("cmd-z", Undo, None),
-        KeyBinding::new("cmd-shift-z", Redo, None),
-        KeyBinding::new("cmd-x", Cut, None),
-        KeyBinding::new("cmd-c", Copy, None),
-        KeyBinding::new("cmd-v", Paste, None),
-        KeyBinding::new("cmd-a", SelectAll, None),
     ]);
 
     cx.set_menus(vec![
@@ -427,7 +443,7 @@ fn install_menus(cx: &mut App) {
                 MenuItem::action("Zoom In", ZoomIn),
                 MenuItem::action("Zoom Out", ZoomOut),
                 MenuItem::separator(),
-                MenuItem::action("Toggle Full Screen", ToggleFullScreen),
+                MenuItem::action("Enter Full Screen", ToggleFullScreen),
             ],
         },
         Menu {
