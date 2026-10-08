@@ -13,7 +13,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
     RenderOnce, SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div,
-    prelude::FluentBuilder, px, white,
+    prelude::FluentBuilder, white,
 };
 
 use crate::ui::icons::{Icon, IconName};
@@ -134,12 +134,7 @@ impl RenderOnce for Switch {
                     .size(rpx(16.))
                     .rounded_full()
                     .bg(white())
-                    .shadow(vec![gpui::BoxShadow {
-                        color: colors.overlay_shadow,
-                        offset: gpui::point(px(0.), px(1.)),
-                        blur_radius: px(2.),
-                        spread_radius: px(0.),
-                    }]),
+                    .shadow(super::glass::shadow_sm(1.)),
             );
         let track = if self.disabled {
             track

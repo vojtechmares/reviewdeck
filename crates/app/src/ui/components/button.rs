@@ -150,6 +150,8 @@ struct VariantColors {
     hover_background: Hsla,
     hover_foreground: Hsla,
     shadow: bool,
+    /// Multiplies the shadow's alpha; 1 at rest.
+    shadow_fade: f32,
 }
 
 fn variant_colors(variant: ButtonVariant, colors: &Colors) -> VariantColors {
@@ -160,6 +162,7 @@ fn variant_colors(variant: ButtonVariant, colors: &Colors) -> VariantColors {
         hover_background,
         hover_foreground: foreground,
         shadow: false,
+        shadow_fade: 1.,
     };
     let transparent = gpui::transparent_black();
     match variant {
@@ -171,6 +174,7 @@ fn variant_colors(variant: ButtonVariant, colors: &Colors) -> VariantColors {
             hover_background: with_alpha(colors.primary, 0.9),
             hover_foreground: colors.primary_foreground,
             shadow: true,
+            shadow_fade: 1.,
         },
         ButtonVariant::Secondary => VariantColors {
             background: colors.surface_strong,
@@ -179,6 +183,7 @@ fn variant_colors(variant: ButtonVariant, colors: &Colors) -> VariantColors {
             hover_background: colors.accent,
             hover_foreground: colors.foreground,
             shadow: false,
+            shadow_fade: 1.,
         },
         ButtonVariant::Ghost => VariantColors {
             background: transparent,
@@ -187,6 +192,7 @@ fn variant_colors(variant: ButtonVariant, colors: &Colors) -> VariantColors {
             hover_background: colors.accent,
             hover_foreground: colors.foreground,
             shadow: false,
+            shadow_fade: 1.,
         },
         ButtonVariant::Outline => plain(
             transparent,
@@ -201,6 +207,7 @@ fn variant_colors(variant: ButtonVariant, colors: &Colors) -> VariantColors {
             hover_background: with_alpha(colors.ok, 0.25),
             hover_foreground: colors.ok,
             shadow: false,
+            shadow_fade: 1.,
         },
         ButtonVariant::Danger => VariantColors {
             background: colors.bad_soft,
@@ -209,6 +216,7 @@ fn variant_colors(variant: ButtonVariant, colors: &Colors) -> VariantColors {
             hover_background: with_alpha(colors.bad, 0.25),
             hover_foreground: colors.bad,
             shadow: false,
+            shadow_fade: 1.,
         },
         ButtonVariant::Subtle => VariantColors {
             background: colors.muted,
@@ -217,6 +225,7 @@ fn variant_colors(variant: ButtonVariant, colors: &Colors) -> VariantColors {
             hover_background: colors.accent,
             hover_foreground: colors.foreground,
             shadow: false,
+            shadow_fade: 1.,
         },
     }
 }
@@ -282,9 +291,27 @@ fn metrics(size: ButtonSize) -> Metrics {
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let paint = variant_colors(self.variant, &colors);
+        let mut paint = variant_colors(self.variant, &colors);
         let sizing = metrics(self.size);
         let inert = self.disabled || self.loading;
+        // `disabled:opacity-45`. CSS fades the finished button as one layer, so the label
+        // ends up 45% of the way from the backdrop to its colour, however dark the fill
+        // beneath it. gpui's `.opacity()` fades each primitive on its own, which stacks the
+        // label's fade on the fill's and leaves it much fainter than Electron's. So the
+        // fade is baked in: translucent fill and border, and an opaque label already blended
+        // towards the app background.
+        const DISABLED_OPACITY: f32 = 0.45;
+        if inert {
+            let backdrop = Hsla {
+                a: 1.,
+                ..colors.background
+            };
+            let fade = |c: Hsla| with_alpha(c, c.a * DISABLED_OPACITY);
+            paint.background = fade(paint.background);
+            paint.border = fade(paint.border);
+            paint.foreground = backdrop.blend(fade(paint.foreground));
+            paint.shadow_fade = DISABLED_OPACITY;
+        }
 
         // `hover:text-foreground`. gpui cannot recolour already-shaped text from a hover
         // style (see the module docs of `ui::components`), so a variant whose text changes
@@ -319,6 +346,7 @@ impl RenderOnce for Button {
         };
 
         let hover_background = paint.hover_background;
+        let shadow_fade = paint.shadow_fade;
         let hover_foreground = paint.hover_foreground;
 
         let selector = format!("button-{}", self.id);
@@ -342,14 +370,9 @@ impl RenderOnce for Button {
             .bg(paint.background)
             .text_color(text_colour)
             .when(paint.shadow, |d| {
-                d.shadow(vec![gpui::BoxShadow {
-                    color: colors.overlay_shadow,
-                    offset: gpui::point(gpui::px(0.), gpui::px(1.)),
-                    blur_radius: gpui::px(2.),
-                    spread_radius: gpui::px(0.),
-                }])
+                d.shadow(super::glass::shadow_sm(shadow_fade))
             })
-            .when(inert, |d| d.opacity(0.45).cursor_default())
+            .when(inert, |d| d.cursor_default())
             .when(!inert, |d| {
                 d.cursor_pointer()
                     .hover(move |s| s.bg(hover_background).text_color(hover_foreground))

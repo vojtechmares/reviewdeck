@@ -40,14 +40,13 @@ use crate::ui::theme::ActiveTheme;
 use super::button::with_alpha;
 
 use gpui::{
-    App, AvailableSpace, Bounds, BoxShadow, ClipboardItem, ContentMask, Context, CursorStyle,
-    DispatchPhase, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId,
-    InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Rems, Render,
-    ScrollWheelEvent, SharedString, Style, Styled, Task, TextAlign, TextRun, UTF16Selection,
-    UnderlineStyle, Window, WrappedLine, actions, div, fill, hsla, point, prelude::FluentBuilder,
-    px, relative, rems, size,
+    App, AvailableSpace, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, DispatchPhase,
+    Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement,
+    KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
+    ParentElement, Pixels, Point, Rems, Render, ScrollWheelEvent, SharedString, Style, Styled,
+    Task, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div,
+    fill, hsla, point, prelude::FluentBuilder, px, relative, rems, size,
 };
 
 use crate::ui::theme::rpx;
@@ -1674,13 +1673,22 @@ impl Render for TextInput {
                 style.border
             })
             .bg(style.background)
-            .when(focused, |d| {
-                d.shadow(vec![BoxShadow {
-                    color: style.ring,
-                    offset: point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(2.),
-                }])
+            // `focus-visible:outline-2 outline-ring`, with the browser's 2px offset: a ring
+            // 2px outside the border box and 2px wide. It is a separate border-only layer
+            // rather than a spread shadow, because a shadow is painted under the whole box
+            // and shows through the field's translucent fill as a lighter wash.
+            .when(focused && style.ring.a > 0., |d| {
+                d.relative().child(
+                    div()
+                        .absolute()
+                        .top(rpx(-5.))
+                        .left(rpx(-5.))
+                        .right(rpx(-5.))
+                        .bottom(rpx(-5.))
+                        .rounded(rems(style.radius.0 + 4. / 16.))
+                        .border_2()
+                        .border_color(style.ring),
+                )
             });
         field
             .when(self.disabled, |d| {
