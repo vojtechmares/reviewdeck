@@ -11,8 +11,8 @@ code, comments and titles annoying; it is the most visible regression of the rew
 
 - Branch `worktree-rewrite-it-in-rust` (worktree `.claude/worktrees/rewrite-it-in-rust`):
   the Rust + gpui 0.2.2 rewrite of the Electron app. The Electron sources (`src/`, `test/`)
-  are still in the tree and are the specification for behaviour. README describes the
-  native app.
+  are the specification for behaviour. They are deleted from the tree, so read them as of
+  `67e249f`, the last commit before the rewrite: `git show 67e249f:<path>`. README describes the native app.
 - gpui does not provide this and is not going to: Zed builds selection itself, on top of
   gpui, in its own `markdown` crate (not published on crates.io, so it cannot be a
   dependency). Its `MarkdownElement` is the reference implementation to read:
@@ -24,7 +24,7 @@ code, comments and titles annoying; it is the most visible regression of the rew
 ## What the Electron app allowed
 
 Everything in the page was selectable as browser text, except what the TSX marks
-`select-none`:
+`select-none` (paths as of `67e249f`):
 
 - diff gutters with line numbers, the `+`/`-` marker column and the hunk header rows
   (`src/renderer/src/components/DiffView.tsx`, lines ~578, 684, 795, 827);
@@ -147,10 +147,6 @@ Rust app would move its tokens into the Keychain and out of that file.
 
 ## Open threads from the rewrite, not part of this task
 
-- Deleting the Electron sources was blocked by the permission classifier and is waiting on
-  the user's decision.
-- About 30 agent worktrees under `.claude/worktrees/` and large scratch build directories
-  are waiting for the user's cleanup decision.
 - A final full screenshot pass was interrupted by the screen locking.
 
 ## Suggested skills
