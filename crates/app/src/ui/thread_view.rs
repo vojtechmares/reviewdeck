@@ -35,7 +35,7 @@ use crate::ui::components::input::{TextInput, TextInputEvent};
 use crate::ui::components::toast::ToastKind;
 use crate::ui::icons::{Icon, IconName};
 use crate::ui::markdown_view::{ImageLoader, MarkdownView};
-use crate::ui::theme::{ActiveTheme, MONO_FONT, UI_FONT, radius, rpx};
+use crate::ui::theme::{ActiveTheme, UI_FONT, mono_font, radius, rpx};
 
 /// What a card tells its owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,7 +283,7 @@ impl ThreadCard {
                 div()
                     .min_w_0()
                     .truncate()
-                    .font_family(MONO_FONT)
+                    .font_family(mono_font())
                     .text_size(rpx(11.))
                     .text_color(colors.muted_foreground)
                     .child(location),

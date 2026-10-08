@@ -35,7 +35,7 @@ use reviewdeck_core::markdown::{
 
 use crate::ui::code::{self, CodeKind};
 use crate::ui::icons::IconName;
-use crate::ui::theme::{ActiveTheme, Colors, MONO_FONT, UI_FONT, rpx};
+use crate::ui::theme::{ActiveTheme, Colors, UI_FONT, mono_font, rpx};
 
 /// Loads an authenticated image: `(account id, url, app)` -> the decoded image, or
 /// `None` while it is loading or when it failed. The app notifies whoever shows it
@@ -222,7 +222,7 @@ enum Piece<'a> {
 }
 
 fn run(len: usize, style: RunStyle) -> TextRun {
-    let mut face = font(if style.mono { MONO_FONT } else { UI_FONT });
+    let mut face = font(if style.mono { mono_font() } else { UI_FONT });
     face.weight = FontWeight(style.weight);
     if style.italic {
         face.style = FontStyle::Italic;
@@ -757,7 +757,7 @@ fn code_block(lang: Option<&str>, text: &str, env: &Env<'_>) -> AnyElement {
         .border_1()
         .border_color(env.colors.border)
         .bg(env.colors.surface_muted)
-        .font_family(MONO_FONT)
+        .font_family(mono_font())
         .text_size(rpx(m.pre_size))
         .line_height(rpx(m.pre_size * 1.6))
         .text_color(env.colors.foreground)

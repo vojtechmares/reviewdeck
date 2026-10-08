@@ -32,7 +32,7 @@ use crate::ui::components::glass::GlassExt;
 use crate::ui::components::input::{TextInput, TextInputEvent, label};
 use crate::ui::components::toast::ToastKind;
 use crate::ui::icons::{Icon, IconName};
-use crate::ui::theme::{ActiveTheme, MONO_FONT, UI_FONT, radius, rpx};
+use crate::ui::theme::{ActiveTheme, UI_FONT, mono_font, radius, rpx};
 
 /// What a person needs to know to connect one provider.
 struct Guide {
@@ -719,7 +719,7 @@ impl AccountsDialog {
             .child("Needs")
             .child(
                 div()
-                    .font_family(MONO_FONT)
+                    .font_family(mono_font())
                     .text_size(rpx(10.5))
                     .child(guide.scopes),
             )

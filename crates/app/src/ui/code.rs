@@ -150,7 +150,7 @@ fn expand_tabs(line: &str) -> (Cow<'_, str>, Option<Vec<usize>>) {
 ///
 /// `tokens` are the line's tokens from [`highlight`] (`None` renders plain, which is
 /// how a block shows before its colour arrives, and for lines with no grammar). The
-/// caller sets the font (`MONO_FONT`) and size on the element holding the line, which
+/// caller sets the font (`mono_font()`) and size on the element holding the line, which
 /// the text inherits; colours and backgrounds come from the tokens.
 pub fn code_line(line: &str, tokens: Option<&[Token]>) -> StyledText {
     let (text, map) = expand_tabs(line);

@@ -53,7 +53,7 @@ use crate::ui::components::toast::ToastKind;
 use crate::ui::diff_view::{DiffEvent, DiffView};
 use crate::ui::icons::{Icon, IconName};
 use crate::ui::markdown_view::{ImageLoader, MarkdownView};
-use crate::ui::theme::{ActiveTheme, MONO_FONT, radius, rpx};
+use crate::ui::theme::{ActiveTheme, mono_font, radius, rpx};
 use crate::ui::thread_view::{ThreadCard, ThreadEvent};
 
 /// `type Tab`.
@@ -804,7 +804,7 @@ impl PullView {
                     )
                     .child(
                         div()
-                            .font_family(MONO_FONT)
+                            .font_family(mono_font())
                             .text_size(rpx(10.5))
                             .child(format!("{} → {}", item.source_branch, item.target_branch)),
                     ),

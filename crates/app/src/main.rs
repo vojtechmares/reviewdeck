@@ -309,6 +309,7 @@ fn main() {
         state.update(cx, |state, cx| state.hydrate(cx));
 
         apply_theme(cx);
+        ui::theme::load_fonts(cx);
         ui::components::bind_keys(cx);
         ui::app_view::bind_keys(cx);
         install_menus(cx);
