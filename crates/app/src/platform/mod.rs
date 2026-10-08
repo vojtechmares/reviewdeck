@@ -137,6 +137,32 @@ unsafe fn error_description(error: id) -> Option<String> {
     }
 }
 
+/// Brings back every minimised window of the app - `window.restore()` in the
+/// TypeScript's `show()`. gpui can order a window front but has no way to
+/// deminiaturise one, so without this "Open Reviewdeck" and a Dock click would do
+/// nothing for a window sitting in the Dock. Main thread only.
+pub fn restore_miniaturized_windows() {
+    debug_assert!(is_main_thread(), "NSApp is AppKit: main thread only");
+    let _pool = AutoreleasePool::new();
+    // SAFETY: main-thread AppKit calls on the live application; `windows` is an
+    // autoreleased array of live windows, each asked only for its state.
+    unsafe {
+        let app: id = msg_send![class!(NSApplication), sharedApplication];
+        let windows: id = msg_send![app, windows];
+        if windows == nil {
+            return;
+        }
+        let count: usize = msg_send![windows, count];
+        for index in 0..count {
+            let window: id = msg_send![windows, objectAtIndex: index];
+            let miniaturized: BOOL = msg_send![window, isMiniaturized];
+            if miniaturized != NO {
+                let _: () = msg_send![window, deminiaturize: nil];
+            }
+        }
+    }
+}
+
 /// Whether the caller is on the main thread, which every AppKit call here needs.
 fn is_main_thread() -> bool {
     // SAFETY: +[NSThread isMainThread] is thread-safe and has no preconditions.
