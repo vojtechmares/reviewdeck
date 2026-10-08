@@ -2287,4 +2287,87 @@ mod tests {
             ("Authorization".into(), "Bearer ghp_test".into())
         );
     }
+
+    /// The query texts are what GitHub is sent, and a changed character is a changed
+    /// request, so they are pinned against the TypeScript they were ported from.
+    #[test]
+    fn graphql_texts_are_byte_for_byte_the_typescript_ones() {
+        let ts = include_str!("../../../../src/main/providers/github.ts");
+        for text in [
+            THREADS_QUERY,
+            DECISION_QUERY,
+            "mutation Reply($threadId: ID!, $body: String!) {\n        addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {\n          clientMutationId\n        }\n      }",
+            "mutation Resolve($threadId: ID!) {\n          resolveReviewThread(input: { threadId: $threadId }) { clientMutationId }\n        }",
+            "mutation Unresolve($threadId: ID!) {\n          unresolveReviewThread(input: { threadId: $threadId }) { clientMutationId }\n        }",
+        ] {
+            assert!(ts.contains(text), "not in github.ts: {text}");
+        }
+    }
+
+    #[test]
+    fn the_mutations_sent_are_the_ones_pinned_above() {
+        let (http, calls) = serve(vec![(
+            format!("POST {GRAPHQL}"),
+            ok(json!({"data": {"x": {}}})),
+        )]);
+        block_on(set_thread_resolved(&http, &session(), &item(), "T", false)).expect("ok");
+        block_on(set_thread_resolved(&http, &session(), &item(), "T", true)).expect("ok");
+        let calls = calls.lock();
+        let query = |i: usize| -> String {
+            let body: Value = serde_json::from_str(calls[i].body.as_deref().unwrap_or("{}"))
+                .unwrap_or(Value::Null);
+            body["query"].as_str().unwrap_or_default().to_string()
+        };
+        assert!(query(0).contains("unresolveReviewThread"));
+        assert!(query(1).contains("mutation Resolve"));
+    }
+
+    /// More pull requests than the six workers, answered in input order.
+    #[test]
+    fn a_long_deck_keeps_the_search_order() {
+        let count = 14u64;
+        let http = Http::mock(move |request: &MockRequest| {
+            let url = request.url.as_str();
+            if url.starts_with("https://api.github.com/search/issues") {
+                let items: Vec<Value> = (1..=count)
+                    .map(|n| {
+                        json!({"number": n, "repository_url": format!("https://api.github.com/repos/acme/r{n}")})
+                    })
+                    .collect();
+                return ok(json!({"items": items}));
+            }
+            if url.ends_with("/graphql") {
+                return ok(
+                    json!({"data": {"repository": {"pullRequest": {"reviewDecision": null}}}}),
+                );
+            }
+            if let Some(rest) = url.strip_prefix("https://api.github.com/repos/acme/r") {
+                let n: u64 = rest
+                    .split('/')
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(0);
+                if rest.contains("/pulls/") && rest.ends_with("/reviews?per_page=100") {
+                    return ok(json!([]));
+                }
+                if rest.contains("/pulls/") {
+                    return ok(
+                        json!({"title": format!("pr {n}"), "head": {"ref": "h", "sha": format!("s{n}")}, "base": {"ref": "main", "sha": "b"}}),
+                    );
+                }
+                if rest.contains("/check-runs") {
+                    return ok(json!({"check_runs": []}));
+                }
+                if rest.ends_with("/status") {
+                    return ok(json!({"statuses": []}));
+                }
+            }
+            MockResponse::new(599, format!("unexpected {url}"))
+        });
+        let items = block_on(list_review_requests(&http, &session())).expect("lists");
+        let titles: Vec<String> = items.iter().map(|item| item.title.clone()).collect();
+        let expected: Vec<String> = (1..=count).map(|n| format!("pr {n}")).collect();
+        assert_eq!(titles, expected);
+        assert_eq!(items[3].id, "acct-1:acme/r4:4");
+    }
 }

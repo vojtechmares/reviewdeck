@@ -2005,4 +2005,49 @@ mod tests {
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].comments[0].body, "still here");
     }
+
+    #[test]
+    fn thread_ids_and_path_keyed_projects_are_percent_encoded_in_every_url() {
+        let mut it = item();
+        it.repo_key = "gitlab-org/sub group/widgets".into();
+        let base = "https://gitlab.com/api/v4/projects/gitlab-org%2Fsub%20group%2Fwidgets/merge_requests/7";
+        let (http, calls) = serve(vec![
+            (
+                post_key(&format!("{base}/discussions/a%2Fb%20c/notes")),
+                ok(json!({})),
+            ),
+            (format!("PUT {base}/discussions/a%2Fb%20c"), ok(json!({}))),
+        ]);
+        block_on(reply_to_thread(&http, &session(), &it, "a/b c", "hi")).expect("replies");
+        block_on(set_thread_resolved(&http, &session(), &it, "a/b c", false)).expect("resolves");
+        assert_eq!(calls.lock().len(), 2);
+    }
+
+    /// More merge requests than the five workers, answered in input order.
+    #[test]
+    fn a_long_deck_keeps_the_list_order() {
+        let count = 12u64;
+        let http = Http::mock(move |request: &MockRequest| {
+            let url = request.url.as_str();
+            if url.starts_with("https://gitlab.com/api/v4/merge_requests?") {
+                let mrs: Vec<Value> = (1..=count)
+                    .map(|n| json!({"iid": n, "project_id": 40 + n, "title": format!("mr {n}")}))
+                    .collect();
+                return ok(Value::Array(mrs));
+            }
+            if url.ends_with("/approvals") {
+                return ok(json!({"approved_by": [], "approvals_required": 0}));
+            }
+            if url.ends_with("/pipelines") {
+                return ok(json!([]));
+            }
+            MockResponse::new(599, format!("unexpected {url}"))
+        });
+        let items = block_on(list_review_requests(&http, &session())).expect("lists");
+        let titles: Vec<String> = items.iter().map(|item| item.title.clone()).collect();
+        let expected: Vec<String> = (1..=count).map(|n| format!("mr {n}")).collect();
+        assert_eq!(titles, expected);
+        assert_eq!(items[0].repo_key, "41");
+        assert_eq!(items[0].repo, "41");
+    }
 }
