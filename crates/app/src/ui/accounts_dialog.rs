@@ -8,15 +8,15 @@
 //!
 //! Everything goes through [`AppState`]: `add_account` and `update_account` verify the
 //! token against the host and produce the user-facing error text, which is shown in a
-//! toast exactly as the TSX did. The token is held only by the [`SecureInput`] and handed
-//! to `AppState`; it is never logged, never put in a toast and never rendered (the field
-//! shows bullets).
+//! toast exactly as the TSX did. The token is held only by a masked [`TextInput`] (the
+//! `<Input type="password">`) and handed to `AppState`; it is never logged, never put in
+//! a toast, never copied out of the field and never rendered (the field shows bullets).
 
 use gpui::{
-    App, AppContext, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
-    Window, div, point, prelude::FluentBuilder, px,
+    App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder,
+    px,
 };
 use reviewdeck_core::model::{
     Account, AccountDraft, AccountStatus, DEFAULT_AGENT_COMMAND, ProviderKind,
@@ -28,7 +28,7 @@ use crate::ui::components::avatar::Avatar;
 use crate::ui::components::button::{Button, ButtonVariant};
 use crate::ui::components::dialog::Dialog;
 use crate::ui::components::glass::GlassExt;
-use crate::ui::components::input::{TextInput, label};
+use crate::ui::components::input::{TextInput, TextInputEvent, label};
 use crate::ui::components::toast::ToastKind;
 use crate::ui::icons::{Icon, IconName};
 use crate::ui::theme::{ActiveTheme, UI_FONT, mono_font, radius, rpx};
@@ -70,193 +70,6 @@ fn guide(kind: ProviderKind) -> &'static Guide {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The secure field
-// ---------------------------------------------------------------------------------------------
-
-/// What a [`SecureInput`] tells its owner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecureEvent {
-    /// Enter was pressed in the field.
-    Submit,
-}
-
-/// `<Input type="password">`: a single-line field that shows bullets instead of what was
-/// typed. The kit's [`TextInput`] has no masked mode, so this is the minimal field a token
-/// needs: type, paste (Cmd-V), delete back (Backspace) and clear (Cmd- or Alt-Backspace).
-/// There is no caret movement, selection or input method - a token is pasted or typed in
-/// one go, so the field only ever edits at its end. The text is never shown or logged.
-pub struct SecureInput {
-    focus: FocusHandle,
-    value: String,
-    placeholder: SharedString,
-}
-
-impl EventEmitter<SecureEvent> for SecureInput {}
-
-impl Focusable for SecureInput {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
-    }
-}
-
-impl SecureInput {
-    pub fn new(cx: &mut Context<Self>) -> SecureInput {
-        SecureInput {
-            focus: cx.focus_handle().tab_stop(true),
-            value: String::new(),
-            placeholder: SharedString::default(),
-        }
-    }
-
-    /// What was typed. The only reader should be the code that sends it to the host.
-    pub fn value(&self) -> &str {
-        &self.value
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.value.is_empty()
-    }
-
-    pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.placeholder = text.into();
-        cx.notify();
-    }
-
-    pub fn clear(&mut self, cx: &mut Context<Self>) {
-        self.value.clear();
-        cx.notify();
-    }
-
-    /// Appends pasted or typed text, dropping line breaks and control characters (a token is
-    /// one line; a trailing newline from a copied terminal line must not become part of it).
-    fn push_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        let before = self.value.len();
-        self.value
-            .extend(text.chars().filter(|character| !character.is_control()));
-        if self.value.len() != before {
-            cx.notify();
-        }
-    }
-
-    fn paste(&mut self, cx: &mut Context<Self>) {
-        if let Some(text) = cx
-            .read_from_clipboard()
-            .and_then(|clipboard: ClipboardItem| clipboard.text())
-        {
-            self.push_text(&text, cx);
-        }
-    }
-
-    fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let keystroke = &event.keystroke;
-        let modifiers = keystroke.modifiers;
-        if modifiers.platform {
-            match keystroke.key.as_str() {
-                "v" => self.paste(cx),
-                "backspace" => self.clear(cx),
-                _ => {}
-            }
-            return;
-        }
-        match keystroke.key.as_str() {
-            "backspace" if modifiers.alt => self.clear(cx),
-            "backspace" => {
-                if self.value.pop().is_some() {
-                    cx.notify();
-                }
-            }
-            "enter" => cx.emit(SecureEvent::Submit),
-            _ => {
-                if modifiers.control {
-                    return;
-                }
-                if let Some(text) = keystroke.key_char.as_deref() {
-                    self.push_text(text, cx);
-                }
-            }
-        }
-    }
-}
-
-impl Render for SecureInput {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.theme().colors;
-        let focused = self.focus.is_focused(window);
-        let empty = self.value.is_empty();
-        let bullets: SharedString = "•".repeat(self.value.chars().count()).into();
-
-        div()
-            .id("secure-input")
-            .key_context("SecureInput")
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)))
-            // Cmd-V is bound app-wide to the Edit menu's Paste, which wins over a key press.
-            .on_action(cx.listener(|this, _: &crate::Paste, _, cx| this.paste(cx)))
-            .on_mouse_down(MouseButton::Left, |_, _, _| {})
-            .flex()
-            .items_center()
-            .h(rpx(36.))
-            .w_full()
-            .px(rpx(12.))
-            .overflow_hidden()
-            .rounded(rpx(radius::LG))
-            .border_1()
-            .border_color(if focused {
-                colors.border_strong
-            } else {
-                colors.border
-            })
-            .bg(colors.surface_strong)
-            .text_size(rpx(13.))
-            .text_color(colors.foreground)
-            .cursor_text()
-            .when(focused, |d| {
-                d.shadow(vec![gpui::BoxShadow {
-                    color: gpui::Hsla {
-                        a: 0.35,
-                        ..colors.ring
-                    },
-                    offset: point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(3.),
-                }])
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .flex_1()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .when(empty, |d| {
-                        d.justify_start().text_color(gpui::Hsla {
-                            a: 0.7,
-                            ..colors.muted_foreground
-                        })
-                    })
-                    .child(if empty {
-                        self.placeholder.clone()
-                    } else {
-                        bullets
-                    })
-                    .when(focused, |d| {
-                        // The caret: the field only ever edits at its end.
-                        d.child(
-                            div()
-                                .flex_none()
-                                .w(px(1.))
-                                .h(rpx(16.))
-                                .when(!empty, |c| c.ml(px(1.)))
-                                .bg(colors.foreground),
-                        )
-                    }),
-            )
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
 // The dialog
 // ---------------------------------------------------------------------------------------------
 
@@ -276,7 +89,7 @@ pub struct AccountsDialog {
     host: Entity<TextInput>,
     label: Entity<TextInput>,
     username: Entity<TextInput>,
-    token: Entity<SecureInput>,
+    token: Entity<TextInput>,
     agent_command: Entity<TextInput>,
     save_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -303,7 +116,7 @@ impl AccountsDialog {
         let label = text_field("Work GitHub", cx);
         let username = text_field("your-handle", cx);
         let agent_command = text_field(DEFAULT_AGENT_COMMAND, cx);
-        let token = cx.new(SecureInput::new);
+        let token = cx.new(|cx| TextInput::new(cx).masked(true));
 
         // Escape inside a field reports `Cancel` and travels on to the Dialog, which closes
         // - the TSX dialog closed on Escape wherever the focus was.
@@ -312,8 +125,8 @@ impl AccountsDialog {
             cx.notify();
         })];
         // Enter in the token field submits, when there is something to submit.
-        subscriptions.push(cx.subscribe(&token, |this, _, event: &SecureEvent, cx| {
-            if matches!(event, SecureEvent::Submit) && this.can_save(cx) {
+        subscriptions.push(cx.subscribe(&token, |this, _, event: &TextInputEvent, cx| {
+            if matches!(event, TextInputEvent::Submit) && this.can_save(cx) {
                 this.save(cx);
             }
         }));
@@ -355,14 +168,14 @@ impl AccountsDialog {
     /// `canSave`: a token is typed, or an existing account is being edited (blank keeps the
     /// stored token).
     fn can_save(&self, cx: &App) -> bool {
-        !self.token.read(cx).value().trim().is_empty() || self.editing_id.is_some()
+        !self.token.read(cx).text().trim().is_empty() || self.editing_id.is_some()
     }
 
     /// `reset`: leaves the form and forgets everything typed in it.
     fn reset(&mut self, cx: &mut Context<Self>) {
         self.adding = false;
         self.editing_id = None;
-        self.token.update(cx, |token, cx| token.clear(cx));
+        self.token.update(cx, |token, cx| token.set_text("", cx));
         self.label.update(cx, |input, cx| input.set_text("", cx));
         self.username.update(cx, |input, cx| input.set_text("", cx));
         self.agent_command
@@ -412,7 +225,7 @@ impl AccountsDialog {
         };
         self.username
             .update(cx, |input, cx| input.set_text(username, cx));
-        self.token.update(cx, |token, cx| token.clear(cx));
+        self.token.update(cx, |token, cx| token.set_text("", cx));
         self.agent_command.update(cx, |input, cx| {
             input.set_text(account.agent_command.clone().unwrap_or_default(), cx)
         });
@@ -452,7 +265,7 @@ impl AccountsDialog {
             kind: self.kind,
             host: self.host.read(cx).text().to_string(),
             label: self.label.read(cx).text().trim().to_string(),
-            token: self.token.read(cx).value().trim().to_string(),
+            token: self.token.read(cx).text().trim().to_string(),
             username: Some(self.username.read(cx).text().trim().to_string()),
             agent_command: Some(self.agent_command.read(cx).text().trim().to_string()),
         };
