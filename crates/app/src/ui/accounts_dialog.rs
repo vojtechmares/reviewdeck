@@ -24,7 +24,6 @@ use reviewdeck_core::model::{
 use reviewdeck_core::token_url::token_create_url;
 
 use crate::state::{AppState, GlobalState};
-use crate::ui::app_view::toast;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::button::{Button, ButtonVariant};
 use crate::ui::components::dialog::Dialog;
@@ -33,6 +32,7 @@ use crate::ui::components::input::{TextInput, TextInputEvent, label};
 use crate::ui::components::toast::ToastKind;
 use crate::ui::icons::{Icon, IconName};
 use crate::ui::theme::{ActiveTheme, UI_FONT, mono_font, radius, rpx};
+use crate::ui::thread_view::{probe, say};
 
 /// What a person needs to know to connect one provider.
 struct Guide {
@@ -475,7 +475,7 @@ impl AccountsDialog {
                 match result {
                     Ok(account) => {
                         this.reload(cx);
-                        toast(
+                        say(
                             cx,
                             ToastKind::Ok,
                             if editing {
@@ -486,7 +486,7 @@ impl AccountsDialog {
                         );
                         this.reset(cx);
                     }
-                    Err(error) => toast(cx, ToastKind::Bad, error.to_string()),
+                    Err(error) => say(cx, ToastKind::Bad, error.to_string()),
                 }
                 cx.notify();
             })
@@ -502,9 +502,9 @@ impl AccountsDialog {
         match removed {
             Ok(_) => {
                 self.reload(cx);
-                toast(cx, ToastKind::Info, format!("Removed {name}."));
+                say(cx, ToastKind::Info, format!("Removed {name}."));
             }
-            Err(error) => toast(cx, ToastKind::Bad, error.to_string()),
+            Err(error) => say(cx, ToastKind::Bad, error.to_string()),
         }
         cx.notify();
     }
@@ -616,7 +616,8 @@ impl AccountsDialog {
                             .text_color(colors.muted_foreground)
                             .child(count.to_string()),
                     )
-                    .child(
+                    .child(probe(
+                        format!("edit-{}", account.label),
                         Button::new(SharedString::from(format!("edit-{}", account.id)))
                             .variant(ButtonVariant::Ghost)
                             .icon_only(IconName::Pencil)
@@ -624,8 +625,9 @@ impl AccountsDialog {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.start_edit(&edit_account, cx)
                             })),
-                    )
-                    .child(
+                    ))
+                    .child(probe(
+                        format!("remove-{}", account.label),
                         Button::new(SharedString::from(format!("remove-{}", account.id)))
                             .variant(ButtonVariant::Ghost)
                             .icon_only(IconName::Trash2)
@@ -633,7 +635,7 @@ impl AccountsDialog {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.remove(&remove_id, &remove_name, cx)
                             })),
-                    ),
+                    )),
             );
         }
         if self.accounts.is_empty() {
@@ -659,7 +661,9 @@ impl AccountsDialog {
         let mut options = div().grid().grid_cols(2).gap(rpx(6.));
         for option in ProviderKind::ALL {
             let active = kind == option;
-            options = options.child(
+            let tag = format!("provider-{}", option.as_str());
+            options = options.child(probe(
+                tag,
                 div()
                     .id(SharedString::from(format!("provider-{}", option.as_str())))
                     .flex()
@@ -696,7 +700,7 @@ impl AccountsDialog {
                     .when(!locked, |d| {
                         d.on_click(cx.listener(move |this, _, _, cx| this.pick_kind(option, cx)))
                     }),
-            );
+            ));
         }
 
         let token_label = if kind == ProviderKind::Bitbucket {
@@ -724,7 +728,8 @@ impl AccountsDialog {
                     .child(guide.scopes),
             )
             .child(".")
-            .child(
+            .child(probe(
+                "create-token",
                 div()
                     .id("create-token")
                     .flex()
@@ -742,7 +747,7 @@ impl AccountsDialog {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.state.read(cx).open_external(&create_url, cx);
                     })),
-            );
+            ));
 
         div()
             .flex()
@@ -802,35 +807,32 @@ impl Render for AccountsDialog {
                 .flex()
                 .items_center()
                 .gap(rpx(8.))
-                .child(
+                .child(probe(
+                    "accounts-cancel",
                     Button::new("accounts-cancel")
                         .variant(ButtonVariant::Ghost)
                         .disabled(busy)
                         .on_click(cx.listener(|this, _, _, cx| this.reset(cx)))
                         .child("Cancel"),
-                )
-                .child(
+                ))
+                .child(probe(
+                    "accounts-save",
                     Button::new("accounts-save")
                         .variant(ButtonVariant::Default)
                         .loading(busy)
                         .disabled(busy || !can_save)
                         .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
-                        .child(if busy {
-                            "Verifying…"
-                        } else if editing {
-                            "Save"
-                        } else {
-                            "Connect"
-                        }),
-                )
+                        .child(save_label(busy, editing)),
+                ))
         } else {
-            div().child(
+            div().child(probe(
+                "accounts-add",
                 Button::new("accounts-add")
                     .variant(ButtonVariant::Default)
                     .icon(IconName::Plus)
                     .on_click(cx.listener(|this, _, _, cx| this.start_add(cx)))
                     .child("Add account"),
-            )
+            ))
         };
 
         let body = if form_open {
@@ -854,6 +856,17 @@ impl Render for AccountsDialog {
                     .text_color(colors.foreground)
                     .child(body),
             )
+    }
+}
+
+/// The save button's label: connecting verifies the token against the host first.
+fn save_label(busy: bool, editing: bool) -> &'static str {
+    if busy {
+        "Verifying…"
+    } else if editing {
+        "Save"
+    } else {
+        "Connect"
     }
 }
 
@@ -931,3 +944,7 @@ mod tests {
         assert_eq!(url_host("not a url"), "not a url");
     }
 }
+
+#[cfg(test)]
+#[path = "accounts_dialog_tests.rs"]
+mod dialog_tests;

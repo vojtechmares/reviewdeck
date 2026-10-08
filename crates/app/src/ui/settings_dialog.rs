@@ -13,7 +13,6 @@ use reviewdeck_core::model::{DEFAULT_AGENT_COMMAND, DiffViewMode, Settings, Them
 
 use crate::platform::login_item;
 use crate::state::{AppState, GlobalState};
-use crate::ui::app_view::toast;
 use crate::ui::components::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::components::dialog::Dialog;
 use crate::ui::components::glass::GlassExt;
@@ -22,6 +21,7 @@ use crate::ui::components::select::{Select, SelectEvent, SelectOption};
 use crate::ui::components::switch::Switch;
 use crate::ui::components::toast::ToastKind;
 use crate::ui::theme::{ActiveTheme, UI_FONT, radius, rpx};
+use crate::ui::thread_view::{probe, say};
 
 /// The dialogs one can open another from. `AppView` renders at most one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +101,23 @@ fn theme_value(theme: ThemeMode) -> &'static str {
     }
 }
 
+/// The theme a select value stands for.
+fn theme_from_value(value: &str) -> ThemeMode {
+    match value {
+        "light" => ThemeMode::Light,
+        "dark" => ThemeMode::Dark,
+        _ => ThemeMode::System,
+    }
+}
+
+/// The diff layout a select value stands for.
+fn diff_view_from_value(value: &str) -> DiffViewMode {
+    match value {
+        "unified" => DiffViewMode::Unified,
+        _ => DiffViewMode::Split,
+    }
+}
+
 fn diff_view_value(mode: DiffViewMode) -> &'static str {
     match mode {
         DiffViewMode::Split => "split",
@@ -162,19 +179,12 @@ impl SettingsDialog {
         }));
         subscriptions.push(cx.subscribe(&theme, |this, _, event, cx| {
             let SelectEvent::Changed(value) = event;
-            let theme = match value.as_ref() {
-                "light" => ThemeMode::Light,
-                "dark" => ThemeMode::Dark,
-                _ => ThemeMode::System,
-            };
+            let theme = theme_from_value(value);
             this.apply(cx, move |s| s.theme = theme);
         }));
         subscriptions.push(cx.subscribe(&diff_view, |this, _, event, cx| {
             let SelectEvent::Changed(value) = event;
-            let mode = match value.as_ref() {
-                "unified" => DiffViewMode::Unified,
-                _ => DiffViewMode::Split,
-            };
+            let mode = diff_view_from_value(value);
             this.apply(cx, move |s| s.diff_view = mode);
         }));
         subscriptions.push(
@@ -209,7 +219,7 @@ impl SettingsDialog {
             .state
             .update(cx, |state, cx| state.set_settings(patch, cx));
         if let Err(error) = result {
-            toast(cx, ToastKind::Bad, error.to_string());
+            say(cx, ToastKind::Bad, error.to_string());
         }
         cx.notify();
     }
@@ -241,7 +251,7 @@ impl SettingsDialog {
 }
 
 /// `Field`: a label that takes the width and a 160px control.
-fn field(label: &'static str, control: impl IntoElement) -> gpui::AnyElement {
+fn field(label: &'static str, tag: &'static str, control: impl IntoElement) -> gpui::AnyElement {
     div()
         .flex()
         .items_center()
@@ -253,7 +263,7 @@ fn field(label: &'static str, control: impl IntoElement) -> gpui::AnyElement {
                 .font_weight(FontWeight::MEDIUM)
                 .child(label),
         )
-        .child(div().w(rpx(160.)).flex_none().child(control))
+        .child(div().w(rpx(160.)).flex_none().child(probe(tag, control)))
         .into_any_element()
 }
 
@@ -285,7 +295,7 @@ impl Render for SettingsDialog {
             let weak = cx.entity().downgrade();
             // The kit's labelled Switch cannot wrap a long label (its label has no
             // `min-w-0`), so the row is laid out here and only the track is the kit's.
-            div()
+            let row = div()
                 .id(id)
                 .flex()
                 .items_center()
@@ -299,8 +309,8 @@ impl Render for SettingsDialog {
                         weak.update(cx, |this, cx| this.apply(cx, |s| patch(s, !checked)))
                             .ok();
                     })
-                })
-                .into_any_element()
+                });
+            probe(id, row)
         };
 
         // Each section is a caption and a glass card; the card's children are listed here.
@@ -311,8 +321,16 @@ impl Render for SettingsDialog {
             .child(titled(
                 "Syncing",
                 vec![
-                    field("Check for new reviews every", self.poll_interval.clone()),
-                    field("Re-poll running checks every", self.check_poll_interval.clone()),
+                    field(
+                        "Check for new reviews every",
+                        "poll-interval",
+                        self.poll_interval.clone(),
+                    ),
+                    field(
+                        "Re-poll running checks every",
+                        "check-poll-interval",
+                        self.check_poll_interval.clone(),
+                    ),
                 ],
                 cx,
             ))
@@ -346,17 +364,16 @@ impl Render for SettingsDialog {
                                 .child("Review schedule"),
                         )
                         .child(
-                            Button::new("open-schedule")
-                                .size(ButtonSize::Sm)
-                                .disabled(!settings.notifications_enabled)
-                                .on_click(cx.listener(|_, _, _, cx| {
-                                    cx.emit(DialogEvent::Open(DialogKind::Schedule))
-                                }))
-                                .child(match window_count {
-                                    0 => "Set up…".to_string(),
-                                    1 => "1 window…".to_string(),
-                                    n => format!("{n} windows…"),
-                                }),
+                            probe(
+                                "open-schedule",
+                                Button::new("open-schedule")
+                                    .size(ButtonSize::Sm)
+                                    .disabled(!settings.notifications_enabled)
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(DialogEvent::Open(DialogKind::Schedule))
+                                    }))
+                                    .child(schedule_label(window_count)),
+                            ),
                         )
                         .into_any_element(),
                     note(
@@ -369,8 +386,8 @@ impl Render for SettingsDialog {
             .child(titled(
                 "Appearance",
                 vec![
-                    field("Theme", self.theme.clone()),
-                    field("Diff layout", self.diff_view.clone()),
+                    field("Theme", "theme", self.theme.clone()),
+                    field("Diff layout", "diff-view", self.diff_view.clone()),
                     toggle(
                         "hide-approved",
                         "Hide pull requests I already approved",
@@ -421,7 +438,7 @@ impl Render for SettingsDialog {
             .child(titled(
                 "Agent handoff",
                 vec![
-                    field("Command to copy", self.agent_command.clone()),
+                    field("Command to copy", "agent-command", self.agent_command.clone()),
                     note(
                         "Used by “Copy Claude prompt”. A shell alias works, because it is your own shell that runs it - Reviewdeck only copies the text. Any account can override this.",
                         cx,
@@ -434,8 +451,7 @@ impl Render for SettingsDialog {
                 {
                     let weak = cx.entity().downgrade();
                     let launch = settings.launch_at_login;
-                    let mut rows = vec![
-                        div()
+                    let row = div()
                             .id("launch-at-login")
                             .flex()
                             .items_center()
@@ -452,9 +468,8 @@ impl Render for SettingsDialog {
                             .on_click(move |_, _, cx| {
                                 weak.update(cx, |this, cx| this.set_launch_at_login(!launch, cx))
                                     .ok();
-                            })
-                            .into_any_element(),
-                    ];
+                            });
+                    let mut rows = vec![probe("launch-at-login", row)];
                     if let Some(error) = &self.login_error {
                         rows.push(
                             div()
@@ -480,12 +495,13 @@ impl Render for SettingsDialog {
                     .text_color(colors.muted_foreground)
                     .child(format!("Reviewdeck {}", info.version)),
             )
-            .footer(
+            .footer(probe(
+                "settings-done",
                 Button::new("settings-done")
                     .variant(ButtonVariant::Default)
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
                     .child("Done"),
-            )
+            ))
             .child(
                 div()
                     .font_family(UI_FONT)
@@ -494,6 +510,15 @@ impl Render for SettingsDialog {
                     .text_color(colors.foreground)
                     .child(sections),
             )
+    }
+}
+
+/// The schedule button: how many windows are set, or the invitation to set one up.
+fn schedule_label(window_count: usize) -> String {
+    match window_count {
+        0 => "Set up…".to_string(),
+        1 => "1 window…".to_string(),
+        n => format!("{n} windows…"),
     }
 }
 
@@ -523,3 +548,7 @@ fn titled(title: &'static str, rows: Vec<gpui::AnyElement>, cx: &App) -> gpui::D
                 .children(rows),
         )
 }
+
+#[cfg(test)]
+#[path = "settings_dialog_tests.rs"]
+mod tests;

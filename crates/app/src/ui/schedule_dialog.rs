@@ -14,7 +14,9 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder,
 };
 use reviewdeck_core::model::{Account, ReviewWindow};
-use reviewdeck_core::review_window::{covers_nothing, day_name, describe_window, window_problem};
+use reviewdeck_core::review_window::{
+    covers_nothing, day_name, describe_window, minutes_of_day, window_problem,
+};
 
 use crate::state::{AppState, GlobalState};
 use crate::ui::components::button::{Button, ButtonVariant};
@@ -22,8 +24,10 @@ use crate::ui::components::dialog::Dialog;
 use crate::ui::components::glass::GlassExt;
 use crate::ui::components::input::{TextInput, TextInputEvent, label};
 use crate::ui::components::switch::Checkbox;
+use crate::ui::components::toast::ToastKind;
 use crate::ui::icons::IconName;
 use crate::ui::theme::{ActiveTheme, UI_FONT, radius, rpx};
+use crate::ui::thread_view::{probe, say};
 
 /// Monday first, because that is how a working week is read.
 const WEEK: [u32; 7] = [1, 2, 3, 4, 5, 6, 0];
@@ -46,6 +50,14 @@ fn blank_window() -> ReviewWindow {
         minimum: 1,
         // Empty is every account, now and in future.
         accounts: Vec::new(),
+    }
+}
+
+/// "9:30" and " 09:30 " as "09:30"; anything `minutes_of_day` cannot read as it was.
+fn normalise_time(text: &str) -> String {
+    match minutes_of_day(text) {
+        Some(minutes) => format!("{:02}:{:02}", minutes / 60, minutes % 60),
+        None => text.to_string(),
     }
 }
 
@@ -163,12 +175,17 @@ impl ScheduleDialog {
 
     /// `save`: adds the window or replaces the one with its id, and goes back to the list.
     fn save(&mut self, cx: &mut Context<Self>) {
-        let Some(editing) = self.editing.clone() else {
+        let Some(mut editing) = self.editing.clone() else {
             return;
         };
         if window_problem(&editing).is_some() {
             return;
         }
+        // A `type="time"` field only ever hands over `HH:MM`; a text field also lets
+        // "9:30" and " 09:30" through the check, and the summary would print them as
+        // typed. Store what the browser would have.
+        editing.start = normalise_time(&editing.start);
+        editing.end = normalise_time(&editing.end);
         let mut next = self.windows(cx);
         match next.iter_mut().find(|window| window.id == editing.id) {
             Some(existing) => *existing = editing,
@@ -192,11 +209,7 @@ impl ScheduleDialog {
             state.set_settings(|settings| settings.review_windows = windows, cx)
         });
         if let Err(error) = result {
-            crate::ui::app_view::toast(
-                cx,
-                crate::ui::components::toast::ToastKind::Bad,
-                error.to_string(),
-            );
+            say(cx, ToastKind::Bad, error.to_string());
         }
     }
 
@@ -261,7 +274,7 @@ impl ScheduleDialog {
         let account_ids: Vec<&str> = self.accounts.iter().map(|a| a.id.as_str()).collect();
 
         let mut list = div().flex().flex_col().gap(rpx(8.));
-        for window in &windows {
+        for (index, window) in windows.iter().enumerate() {
             let summary = describe_window(window, &self.accounts);
             let edit_window = window.clone();
             let remove_id = window.id.clone();
@@ -305,7 +318,8 @@ impl ScheduleDialog {
                                 )
                             }),
                     )
-                    .child(
+                    .child(probe(
+                        format!("edit-window-{index}"),
                         Button::new(SharedString::from(format!("edit-{}", window.id)))
                             .variant(ButtonVariant::Ghost)
                             .icon_only(IconName::Pencil)
@@ -313,8 +327,9 @@ impl ScheduleDialog {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.edit(edit_window.clone(), cx)
                             })),
-                    )
-                    .child(
+                    ))
+                    .child(probe(
+                        format!("remove-window-{index}"),
                         Button::new(SharedString::from(format!("remove-{}", window.id)))
                             .variant(ButtonVariant::Ghost)
                             .icon_only(IconName::Trash2)
@@ -322,7 +337,7 @@ impl ScheduleDialog {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.remove(&remove_id, cx)
                             })),
-                    ),
+                    )),
             );
         }
 
@@ -357,7 +372,8 @@ impl ScheduleDialog {
         let mut days = div().flex().gap(rpx(6.));
         for day in WEEK {
             let active = editing.days.contains(&day);
-            days = days.child(
+            days = days.child(probe(
+                format!("day-{day}"),
                 div()
                     .id(SharedString::from(format!("day-{day}")))
                     .flex()
@@ -382,10 +398,11 @@ impl ScheduleDialog {
                     })
                     .child(day_name(day))
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_day(day, cx))),
-            );
+            ));
         }
 
-        let mut scope = div().flex().flex_col().gap(rpx(6.)).child(
+        let mut scope = div().flex().flex_col().gap(rpx(6.)).child(probe(
+            "all-accounts",
             Checkbox::new("all-accounts")
                 .label("All accounts")
                 .checked(editing.accounts.is_empty())
@@ -394,18 +411,19 @@ impl ScheduleDialog {
                 .on_change(Self::checked_handler(cx, |this, _, cx| {
                     this.patch(cx, |w| w.accounts.clear())
                 })),
-        );
+        ));
         for account in &self.accounts {
             let id = account.id.clone();
             scope = scope.child(
-                div().pl(rpx(16.)).child(
+                div().pl(rpx(16.)).child(probe(
+                    format!("account-{}", account.label),
                     Checkbox::new(SharedString::from(format!("account-{}", account.id)))
                         .label(account.label.clone())
                         .checked(editing.accounts.contains(&account.id))
                         .on_change(Self::checked_handler(cx, move |this, _, cx| {
                             this.toggle_account(&id, cx)
                         })),
-                ),
+                )),
             );
         }
 
@@ -466,12 +484,15 @@ impl ScheduleDialog {
                     }),
             )
             .child(
-                Checkbox::new("window-enabled")
-                    .label("Use this window")
-                    .checked(editing.enabled)
-                    .on_change(Self::checked_handler(cx, |this, value, cx| {
-                        this.patch(cx, |w| w.enabled = value)
-                    })),
+                probe(
+                    "window-enabled",
+                    Checkbox::new("window-enabled")
+                        .label("Use this window")
+                        .checked(editing.enabled)
+                        .on_change(Self::checked_handler(cx, |this, value, cx| {
+                            this.patch(cx, |w| w.enabled = value)
+                        })),
+                ),
             )
     }
 }
@@ -495,7 +516,8 @@ impl Render for ScheduleDialog {
                         .text_color(colors.bad)
                         .children(problem),
                 )
-                .child(
+                .child(probe(
+                    "schedule-cancel",
                     Button::new("schedule-cancel")
                         .variant(ButtonVariant::Ghost)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -503,21 +525,23 @@ impl Render for ScheduleDialog {
                             cx.notify();
                         }))
                         .child("Cancel"),
-                )
-                .child(
+                ))
+                .child(probe(
+                    "schedule-save",
                     Button::new("schedule-save")
                         .variant(ButtonVariant::Default)
                         .disabled(problem.is_some())
                         .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
                         .child("Save"),
-                ),
-            None => div().child(
+                )),
+            None => div().child(probe(
+                "schedule-add",
                 Button::new("schedule-add")
                     .variant(ButtonVariant::Default)
                     .icon(IconName::Plus)
                     .on_click(cx.listener(|this, _, _, cx| this.edit(blank_window(), cx)))
                     .child("Add window"),
-            ),
+            )),
         };
 
         let body = match &editing {
@@ -562,3 +586,7 @@ mod tests {
         assert_ne!(first.id, second.id);
     }
 }
+
+#[cfg(test)]
+#[path = "schedule_dialog_tests.rs"]
+mod dialog_tests;

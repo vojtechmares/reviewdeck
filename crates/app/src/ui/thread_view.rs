@@ -26,7 +26,6 @@ use reviewdeck_core::model::{CommentThread, PullComment};
 use reviewdeck_core::time::{now_ms, relative_time};
 
 use crate::state::{AppState, GlobalState};
-use crate::ui::app_view::toast;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::badge::{Badge, BadgeTone};
 use crate::ui::components::button::{Button, ButtonSize, ButtonVariant};
@@ -184,21 +183,24 @@ impl ThreadCard {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
-                let Some(reply) = this.reply.as_mut() else {
-                    return;
-                };
-                reply.busy = false;
-                reply
-                    .input
-                    .update(cx, |input, cx| input.set_disabled(false, cx));
+                // The composer can be gone by now (the card was told to cancel while the
+                // request was out, as Escape could in the TSX, whose textarea stays
+                // enabled while sending). The outcome still counts: PullView.tsx raised
+                // its toast and reloaded whether or not the box was still open.
+                if let Some(reply) = this.reply.as_mut() {
+                    reply.busy = false;
+                    reply
+                        .input
+                        .update(cx, |input, cx| input.set_disabled(false, cx));
+                }
                 match result {
                     Ok(()) => {
                         this.reply = None;
-                        toast(cx, ToastKind::Ok, "Reply posted.");
+                        say(cx, ToastKind::Ok, "Reply posted.");
                         cx.emit(ThreadEvent::Changed);
                     }
                     // What was typed stays, so the reply can be sent again.
-                    Err(error) => toast(cx, ToastKind::Bad, error.to_string()),
+                    Err(error) => say(cx, ToastKind::Bad, error.to_string()),
                 }
                 cx.notify();
             })
@@ -224,7 +226,7 @@ impl ThreadCard {
                 this.resolving = false;
                 match result {
                     Ok(()) => {
-                        toast(
+                        say(
                             cx,
                             ToastKind::Ok,
                             if resolved {
@@ -235,7 +237,7 @@ impl ThreadCard {
                         );
                         cx.emit(ThreadEvent::Changed);
                     }
-                    Err(error) => toast(cx, ToastKind::Bad, error.to_string()),
+                    Err(error) => say(cx, ToastKind::Bad, error.to_string()),
                 }
                 cx.notify();
             })
@@ -357,22 +359,24 @@ impl ThreadCard {
                         .text_color(colors.muted_foreground)
                         .child("⌘↵ to send"),
                 )
-                .child(
+                .child(probe(
+                    "reply-cancel",
                     Button::new("reply-cancel")
                         .size(ButtonSize::Sm)
                         .variant(ButtonVariant::Ghost)
                         .disabled(busy)
                         .on_click(cx.listener(|this, _, _, cx| this.cancel_reply(cx)))
                         .child("Cancel"),
-                )
-                .child(
+                ))
+                .child(probe(
+                    "reply-send",
                     Button::new("reply-send")
                         .size(ButtonSize::Sm)
                         .variant(ButtonVariant::Default)
                         .disabled(empty || busy)
                         .on_click(cx.listener(|this, _, _, cx| this.send_reply(cx)))
                         .child(if busy { "Sending…" } else { "Reply" }),
-                ),
+                )),
         )
     }
 }
@@ -431,7 +435,8 @@ impl Render for ThreadCard {
                     .items_center()
                     .gap(rpx(6.))
                     .when(thread.can_reply && !replying, |row| {
-                        row.child(
+                        row.child(probe(
+                            "reply",
                             Button::new("reply")
                                 .size(ButtonSize::Sm)
                                 .variant(ButtonVariant::Ghost)
@@ -440,11 +445,12 @@ impl Render for ThreadCard {
                                     cx.listener(|this, _, window, cx| this.start_reply(window, cx)),
                                 )
                                 .child("Reply"),
-                        )
+                        ))
                     })
                     .when(thread.can_resolve, |row| {
                         row.child(
-                            div().ml_auto().child(
+                            div().ml_auto().child(probe(
+                                "resolve",
                                 Button::new("resolve")
                                     .size(ButtonSize::Sm)
                                     .variant(ButtonVariant::Ghost)
@@ -459,7 +465,7 @@ impl Render for ThreadCard {
                                         cx.listener(|this, _, _, cx| this.toggle_resolved(cx)),
                                     )
                                     .child(if resolved { "Reopen" } else { "Resolve" }),
-                            ),
+                            )),
                         )
                     }),
             );
@@ -470,6 +476,32 @@ impl Render for ThreadCard {
         }
         article
     }
+}
+
+/// Raises a toast. Every view in this area goes through here so that tests can read what
+/// was said: the toast stack keeps its messages to itself.
+pub(crate) fn say(cx: &mut App, kind: ToastKind, message: impl Into<SharedString>) {
+    let message = message.into();
+    #[cfg(test)]
+    self::test_support::SAID.with(|said| said.borrow_mut().push((kind, message.to_string())));
+    crate::ui::app_view::toast(cx, kind, message);
+}
+
+/// Gives an element a name the interaction tests can find its bounds by. Outside tests it
+/// is the element itself, untouched.
+#[cfg(test)]
+pub(crate) fn probe(tag: impl Into<String>, element: impl IntoElement) -> gpui::AnyElement {
+    let tag: String = tag.into();
+    div()
+        .debug_selector(move || tag.clone())
+        .child(element)
+        .into_any_element()
+}
+
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn probe(_tag: impl Into<String>, element: impl IntoElement) -> gpui::AnyElement {
+    element.into_any_element()
 }
 
 /// What `@someone`, `#123` and a relative image source in a body of this pull request
@@ -510,3 +542,11 @@ pub(crate) fn image_loader(state: Entity<AppState>) -> ImageLoader {
         })
     })
 }
+
+#[cfg(test)]
+#[path = "view_test_support.rs"]
+pub(crate) mod test_support;
+
+#[cfg(test)]
+#[path = "thread_view_tests.rs"]
+mod tests;

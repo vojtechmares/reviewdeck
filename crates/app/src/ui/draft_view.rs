@@ -19,7 +19,6 @@ use gpui::{
 use reviewdeck_core::model::DraftComment;
 
 use crate::state::{AppState, GlobalState};
-use crate::ui::app_view::toast;
 use crate::ui::components::badge::{Badge, BadgeTone};
 use crate::ui::components::button::{Button, ButtonSize, ButtonVariant, with_alpha};
 use crate::ui::components::input::{TextInput, TextInputEvent};
@@ -27,7 +26,7 @@ use crate::ui::components::toast::ToastKind;
 use crate::ui::icons::IconName;
 use crate::ui::markdown_view::MarkdownView;
 use crate::ui::theme::{ActiveTheme, UI_FONT, radius, rpx};
-use crate::ui::thread_view::{image_loader, markdown_context};
+use crate::ui::thread_view::{image_loader, markdown_context, probe, say};
 
 /// The editor that replaces the body while the draft is being changed.
 struct Editor {
@@ -118,9 +117,16 @@ impl DraftCard {
             .state
             .update(cx, |state, cx| state.update_draft(&id, &body, cx));
         match result {
-            Ok(_) => self.editor = None,
+            Ok(drafts) => {
+                // Show the saved body at once rather than waiting for the owner to
+                // hand the re-listed draft back: the old text must not flash.
+                if let Some(saved) = drafts.into_iter().find(|saved| saved.id == id) {
+                    self.set_draft(saved, cx);
+                }
+                self.editor = None;
+            }
             // The editor stays open with what was typed, as it did behind the TSX toast.
-            Err(error) => toast(cx, ToastKind::Bad, error.to_string()),
+            Err(error) => say(cx, ToastKind::Bad, error.to_string()),
         }
         cx.notify();
     }
@@ -138,20 +144,22 @@ impl DraftCard {
             .flex()
             .items_center()
             .gap(rpx(2.))
-            .child(
+            .child(probe(
+                "draft-edit",
                 Button::new("draft-edit")
                     .variant(ButtonVariant::Ghost)
                     .icon_only(IconName::Pencil)
                     .tooltip("Edit this draft")
                     .on_click(cx.listener(|this, _, window, cx| this.start_edit(window, cx))),
-            )
-            .child(
+            ))
+            .child(probe(
+                "draft-delete",
                 Button::new("draft-delete")
                     .variant(ButtonVariant::Ghost)
                     .icon_only(IconName::Trash2)
                     .tooltip("Delete this draft")
                     .on_click(cx.listener(|this, _, _, cx| this.delete(cx))),
-            )
+            ))
     }
 
     fn editor_view(&self, editor: &Editor, cx: &mut Context<Self>) -> gpui::Div {
@@ -171,38 +179,43 @@ impl DraftCard {
                         .text_color(colors.muted_foreground)
                         .child("⌘↵ to save"),
                 )
-                .child(
+                .child(probe(
+                    "draft-cancel",
                     Button::new("draft-cancel")
                         .size(ButtonSize::Sm)
                         .variant(ButtonVariant::Ghost)
                         .on_click(cx.listener(|this, _, _, cx| this.cancel_edit(cx)))
                         .child("Cancel"),
-                )
-                .child(
+                ))
+                .child(probe(
+                    "draft-save",
                     Button::new("draft-save")
                         .size(ButtonSize::Sm)
                         .variant(ButtonVariant::Default)
                         .disabled(empty)
                         .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
                         .child("Save"),
-                ),
+                )),
         )
     }
+}
+
+/// "Lines 53-55": the first line of a multi-line remark and the last, which is the one the
+/// comment is anchored to. A single-line remark has no label. The TSX joins the two with
+/// an en dash; this uses the hyphen the writing style of this repository asks for.
+fn range_label(draft: &DraftComment) -> Option<String> {
+    let range = draft.range.as_ref()?;
+    Some(match draft.new_line.or(draft.old_line) {
+        Some(end) => format!("Lines {}-{}", range.start_line, end),
+        None => format!("Lines {}-", range.start_line),
+    })
 }
 
 impl Render for DraftCard {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
         let editing = self.editor.is_some();
-        let draft = &self.draft;
-        // The last line of the range is the one the comment is anchored to.
-        let range = draft.range.as_ref().map(|range| {
-            let end = draft.new_line.or(draft.old_line);
-            match end {
-                Some(end) => format!("Lines {}-{}", range.start_line, end),
-                None => format!("Lines {}-", range.start_line),
-            }
-        });
+        let range = range_label(&self.draft);
 
         div()
             .id("draft")
@@ -236,3 +249,7 @@ impl Render for DraftCard {
             })
     }
 }
+
+#[cfg(test)]
+#[path = "draft_view_tests.rs"]
+mod tests;
