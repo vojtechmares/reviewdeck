@@ -582,6 +582,82 @@ impl DiffView {
 
     // ----- comment composer and range selection -------------------------------------------
 
+    /// The list row showing new-side line `line` of file `f`, in either layout.
+    #[cfg(debug_assertions)]
+    fn row_for_new_line(&self, f: usize, line: u32) -> Option<usize> {
+        let hunks = &self.files.get(f)?.hunks;
+        self.entries.iter().position(|entry| match entry.item {
+            Item::Line(file, h, l) if file == f => hunks[h].lines[l].new_line == Some(line),
+            Item::Row(file, h, r) if file == f => self.files[f]
+                .split
+                .as_ref()
+                .and_then(|split| split[h][r].right)
+                .is_some_and(|l| hunks[h].lines[l].new_line == Some(line)),
+            _ => false,
+        })
+    }
+
+    /// The diff steps of `REVIEWDECK_SCENE`: the comment button of a line, a scroll
+    /// position, and editing the first draft. Debug builds only.
+    #[cfg(debug_assertions)]
+    fn apply_scene(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::scene::{self, Kind, Step};
+
+        // The layout step changes the rows these steps address.
+        // And a layout the settings changed has to have reached this view first.
+        if scene::deck_pending(cx)
+            || scene::pending(cx, Kind::Layout).is_some()
+            || self.state.read(cx).settings().diff_view != self.mode
+        {
+            return;
+        }
+        if let Some(Step::Comment(side, line)) = scene::pending(cx, Kind::Comment) {
+            scene::mark_done(cx, Kind::Comment);
+            let found = self.files.first().and_then(|file| {
+                file.hunks.iter().enumerate().find_map(|(h, hunk)| {
+                    hunk.lines
+                        .iter()
+                        .position(|l| line_on(l, side) == Some(line))
+                        .map(|l| (h, l))
+                })
+            });
+            match found {
+                Some((h, l)) if self.files[0].open => {
+                    self.pick(0, h, side, l, window, cx);
+                    // The line above the composer, with a little context before it.
+                    if let Some(ix) = self
+                        .entries
+                        .iter()
+                        .position(|entry| matches!(entry.item, Item::Composer(0, _)))
+                    {
+                        self.list.scroll_to(gpui::ListOffset {
+                            item_ix: ix.saturating_sub(4),
+                            offset_in_item: px(0.),
+                        });
+                    }
+                }
+                _ => eprintln!("REVIEWDECK_SCENE: no commentable line {line} in the first file"),
+            }
+        }
+        if let Some(Step::Scroll(line)) = scene::pending(cx, Kind::Scroll) {
+            scene::mark_done(cx, Kind::Scroll);
+            match self.row_for_new_line(0, line) {
+                Some(ix) => self.list.scroll_to(gpui::ListOffset {
+                    item_ix: ix,
+                    offset_in_item: px(0.),
+                }),
+                None => eprintln!("REVIEWDECK_SCENE: no row for new line {line} in the first file"),
+            }
+        }
+        if scene::pending(cx, Kind::DraftEdit).is_some() && !self.draft_cards.is_empty() {
+            scene::mark_done(cx, Kind::DraftEdit);
+            let first = self.files.first().and_then(|file| file.drafts.first());
+            if let Some(card) = first.and_then(|draft| self.draft_cards.get(&draft.id)) {
+                card.update(cx, |card, cx| card.start_edit(window, cx));
+            }
+        }
+    }
+
     /// `setTarget`: opens the composer on a target, moves it, or closes it. The text
     /// typed so far is kept while the composer stays on the same line.
     fn set_target(
@@ -1488,6 +1564,8 @@ impl DiffView {
 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(debug_assertions)]
+        self.apply_scene(_window, cx);
         let colors = cx.theme().colors;
         if self.files.is_empty() {
             return div()

@@ -652,6 +652,58 @@ impl AppView {
     }
 
     /// Cmd-F: show the filters and put the caret in the search field.
+    /// The deck-level steps of `REVIEWDECK_SCENE`, each through the method its click
+    /// handler calls. Debug builds only.
+    #[cfg(debug_assertions)]
+    fn apply_scene(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::scene::{self, Kind, SceneDialog, Step};
+
+        // The "N drafts hidden" footer link.
+        if scene::pending(cx, Kind::RevealDrafts).is_some() && self.synced {
+            scene::mark_done(cx, Kind::RevealDrafts);
+            if self.hidden_drafts > 0 && !self.reveal_drafts {
+                self.reveal_drafts = true;
+                self.recompute(cx);
+            }
+        }
+        // A click on the n-th card, once the deck has it.
+        if scene::pending(cx, Kind::RevealDrafts).is_none()
+            && let Some(Step::Select(n)) = scene::pending(cx, Kind::Select)
+            && self.synced
+        {
+            scene::mark_done(cx, Kind::Select);
+            match self.items.get(n).map(|item| item.id.clone()) {
+                Some(id) => {
+                    self.select(Some(id), cx);
+                    self.keep_focus(window);
+                }
+                None => eprintln!("REVIEWDECK_SCENE: no card {n} in the deck"),
+            }
+        }
+        if scene::pending(cx, Kind::Filters).is_some() {
+            scene::mark_done(cx, Kind::Filters);
+            self.show_filters = true;
+            cx.notify();
+        }
+        if !scene::deck_pending(cx)
+            && self.synced
+            && let Some(Step::Dialog(dialog)) = scene::pending(cx, Kind::Dialog)
+        {
+            scene::mark_done(cx, Kind::Dialog);
+            match dialog {
+                SceneDialog::Accounts => self.open_dialog(DialogKind::Accounts, window, cx),
+                SceneDialog::AccountsAdd => {
+                    self.open_dialog(DialogKind::Accounts, window, cx);
+                    if let Some(OpenDialog::Accounts(dialog)) = &self.dialog {
+                        dialog.update(cx, |dialog, cx| dialog.start_add(cx));
+                    }
+                }
+                SceneDialog::Settings => self.open_dialog(DialogKind::Settings, window, cx),
+                SceneDialog::Schedule => self.open_dialog(DialogKind::Schedule, window, cx),
+            }
+        }
+    }
+
     fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
         self.show_filters = true;
         // The field mounts in the frame this notification draws, and focus is a handle
@@ -1083,6 +1135,8 @@ fn empty(
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(debug_assertions)]
+        self.apply_scene(window, cx);
         let colors = cx.theme().colors;
 
         // A zoom changes every card's height; the list keeps what it measured until told.
