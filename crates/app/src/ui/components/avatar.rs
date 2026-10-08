@@ -8,7 +8,7 @@ use gpui::{
     Styled, StyledImage, Window, div, img,
 };
 
-use crate::ui::theme::{ActiveTheme, Colors, rpx};
+use crate::ui::theme::{ActiveTheme, rpx};
 
 /// `lib/utils.ts` `initials`: up to two letters, from the first and last words of `name`.
 pub fn initials(name: &str) -> String {
@@ -65,52 +65,50 @@ impl Avatar {
     }
 }
 
-/// The initials disc: `bg-muted text-[9.5px] font-semibold text-muted-foreground`.
-fn initials_disc(name: &str, size: f32, colors: Colors) -> AnyElement {
-    div()
-        .size(rpx(size))
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .overflow_hidden()
-        .rounded_full()
-        .border_1()
-        .border_color(colors.border)
-        .bg(colors.muted)
-        .text_color(colors.muted_foreground)
-        .text_size(rpx(9.5))
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(initials(name))
-        .into_any_element()
+/// The initials as the disc's content: `text-[9.5px] font-semibold text-muted-foreground`.
+fn initials_text(name: &str) -> AnyElement {
+    div().child(initials(name)).into_any_element()
 }
 
+/// The disc is `inline-flex size-6 shrink-0 items-center justify-center overflow-hidden
+/// rounded-full border border-border bg-muted`, and the picture inside it is `size-full
+/// object-cover`. The picture carries its own `rounded-full` because gpui's `overflow_hidden`
+/// clips to a rectangle (inside the border), not to the rounded shape, so a square image
+/// would poke out of the circle's corners. While the picture loads the disc is empty, as the
+/// `<img>` is in the TSX, and a failed load shows the initials. The TSX `title={name}` hover
+/// hint is not reproduced: the avatar has no element id to hang a tooltip on, and two
+/// avatars of the same person would share one.
 impl RenderOnce for Avatar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors;
         let name = self.name.to_string();
+        let disc = div()
+            .size(rpx(self.size))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .overflow_hidden()
+            .rounded_full()
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.muted)
+            .text_color(colors.muted_foreground)
+            .text_size(rpx(9.5))
+            .font_weight(FontWeight::SEMIBOLD);
         match self.src {
             Some(url) => {
-                // The loading and failed states both show the initials disc. `Colors` is
-                // Copy, so the callbacks carry the theme they were built with.
-                let loading_name = name.clone();
                 let fallback_name = name.clone();
-                let size = self.size;
-                div()
-                    .size(rpx(self.size))
-                    .flex_none()
-                    .rounded_full()
-                    .overflow_hidden()
-                    .child(
-                        img(url)
-                            .size_full()
-                            .object_fit(ObjectFit::Cover)
-                            .with_loading(move || initials_disc(&loading_name, size, colors))
-                            .with_fallback(move || initials_disc(&fallback_name, size, colors)),
-                    )
-                    .into_any_element()
+                disc.child(
+                    img(url)
+                        .size_full()
+                        .rounded_full()
+                        .object_fit(ObjectFit::Cover)
+                        .with_loading(|| div().into_any_element())
+                        .with_fallback(move || initials_text(&fallback_name)),
+                )
             }
-            None => initials_disc(&name, self.size, colors),
+            None => disc.child(initials(&name)),
         }
     }
 }

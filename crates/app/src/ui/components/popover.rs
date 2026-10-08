@@ -9,13 +9,19 @@
 //! `on_dismiss` callback. A click outside the panel calls `on_dismiss` (a full-window
 //! backdrop swallows that click, so it does not also re-toggle the trigger), and so does
 //! Escape while the panel holds focus (`Dismiss` in the `Popover` key context).
+//!
+//! Like Radix, the panel takes focus when it opens (so Escape works without a click), sits
+//! 6px under the trigger, keeps 12px from the window edge and scrolls when it is taller than
+//! the room it has. A view that wants focus back on its trigger when the panel closes passes
+//! a handle to [`Popover::restore_focus`]; a widget that keeps focus itself (the select)
+//! turns the grab off with [`Popover::autofocus`].
 
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Corner, ElementId, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, RenderOnce, Styled, Window, anchored, deferred, div, point,
-    prelude::FluentBuilder, px,
+    AnyElement, App, Corner, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, RenderOnce, StatefulInteractiveElement, Styled, Window, anchored, deferred, div,
+    point, prelude::FluentBuilder, px,
 };
 
 use crate::ui::theme::{radius, rpx};
@@ -34,6 +40,8 @@ pub struct Popover {
     open: bool,
     align_end: bool,
     width: Option<f32>,
+    autofocus: bool,
+    restore_focus: Option<FocusHandle>,
     on_dismiss: Option<DismissHandler>,
 }
 
@@ -46,6 +54,8 @@ impl Popover {
             open: false,
             align_end: false,
             width: None,
+            autofocus: true,
+            restore_focus: None,
             on_dismiss: None,
         }
     }
@@ -80,6 +90,18 @@ impl Popover {
         self
     }
 
+    /// Whether the panel takes focus when it opens (the default, as Radix does).
+    pub fn autofocus(mut self, autofocus: bool) -> Popover {
+        self.autofocus = autofocus;
+        self
+    }
+
+    /// Focus this handle when the panel closes while focus is still inside it.
+    pub fn restore_focus(mut self, handle: FocusHandle) -> Popover {
+        self.restore_focus = Some(handle);
+        self
+    }
+
     /// Called on an outside click, or on Escape in the panel. The view should close.
     pub fn on_dismiss(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Popover {
         self.on_dismiss = Some(Rc::new(handler));
@@ -100,7 +122,28 @@ impl RenderOnce for Popover {
         let width = self.width;
         let align_end = self.align_end;
 
-        let mut root = div().id(self.id).relative().flex_none();
+        // Focus bookkeeping: a handle for the panel and whether it was open last frame.
+        let focus =
+            window.use_keyed_state((self.id.clone(), "focus"), cx, |_, cx| cx.focus_handle());
+        let was_open = window.use_keyed_state((self.id.clone(), "was-open"), cx, |_, _| false);
+        let panel_focus = focus.read(cx).clone();
+        let previously_open = *was_open.read(cx);
+        if open != previously_open {
+            was_open.update(cx, |value, _| *value = open);
+            if open && self.autofocus {
+                let handle = panel_focus.clone();
+                window.defer(cx, move |window, _| window.focus(&handle));
+            } else if !open && let Some(target) = self.restore_focus.clone() {
+                let handle = panel_focus.clone();
+                window.defer(cx, move |window, cx| {
+                    if handle.contains_focused(window, cx) || window.focused(cx).is_none() {
+                        window.focus(&target);
+                    }
+                });
+            }
+        }
+
+        let mut root = div().id(self.id.clone()).relative().flex_none();
         if let Some(trigger) = self.trigger {
             root = root.child(trigger);
         }
@@ -125,19 +168,30 @@ impl RenderOnce for Popover {
         )
         .with_priority(1);
 
+        // `max-h-(--radix-popover-content-available-height) overflow-y-auto`, with the
+        // `collisionPadding` of 12px taken off each side.
+        let scroller = div()
+            .id((self.id.clone(), "scroll"))
+            .max_h(viewport.height - px(24.))
+            .overflow_y_scroll()
+            .py(rpx(4.))
+            .child(content);
         let mut panel = div()
             .key_context("Popover")
+            // A widget that keeps focus on its own trigger (the select) must not have the
+            // panel take it on a click, or it would see focus leave and close the list.
+            .when(self.autofocus, |d| d.track_focus(&panel_focus))
             .occlude()
+            .relative()
             .overflow_hidden()
             .rounded(rpx(radius::LG))
-            .py(rpx(4.))
             .glass_overlay(cx)
             .on_action(move |_: &Dismiss, window, cx| {
                 if let Some(handler) = &panel_dismiss {
                     handler(window, cx);
                 }
             })
-            .child(content);
+            .child(scroller);
         if let Some(width) = width {
             panel = panel.w(rpx(width));
         }
@@ -145,8 +199,9 @@ impl RenderOnce for Popover {
         let positioned = deferred(
             anchored()
                 .anchor(corner)
-                .offset(point(px(0.), px(4.)))
-                .snap_to_window_with_margin(px(8.))
+                // `sideOffset={6}`
+                .offset(point(px(0.), px(6.)))
+                .snap_to_window_with_margin(px(12.))
                 .child(panel),
         )
         .with_priority(2);

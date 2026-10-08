@@ -6,12 +6,17 @@
 //!   so the films are as opaque as the CSS film colour alone. The window's own vibrancy
 //!   (`WindowBackgroundAppearance::Blurred`) still shows through the thin `.glass` film.
 //! - `box-shadow: inset 0 1px 0 var(--highlight)` cannot be drawn: `BoxShadow` has no
-//!   inset. The top highlight is approximated with a 1px `highlight` line along the top edge.
-//!   Call [`GlassExt::glass`] for the film and border, and [`top_highlight`] for the line.
+//!   inset. It is reproduced with an absolutely positioned child that has only a 1px top
+//!   border in the `highlight` colour and the panel's corner radius: gpui's quad shader
+//!   follows the rounded corners, so the line tapers into the curve exactly where an inset
+//!   shadow does. [`GlassExt::glass`] and [`GlassExt::glass_overlay`] add that child
+//!   themselves, reading the radius from the element when they are called (so call
+//!   `.rounded(..)` first; the fallback is `rounded-lg`). `glass_quiet` has no highlight in
+//!   the CSS and gets none here.
 
-use gpui::{BoxShadow, Div, Hsla, Styled, div, hsla, point, px};
+use gpui::{AbsoluteLength, BoxShadow, Div, Hsla, ParentElement, Styled, div, hsla, point, px};
 
-use crate::ui::theme::ActiveTheme;
+use crate::ui::theme::{ActiveTheme, radius, rpx};
 
 /// Shadows the CSS `oklch(0.2 0.02 265 / 0.35)` colour. It is the same hue family as the
 /// palette's graphite, so an approximation in hsla is close enough.
@@ -20,11 +25,13 @@ fn glass_shadow_colour() -> Hsla {
 }
 
 /// Adds the glass recipes to any styled element.
-pub trait GlassExt: Styled + Sized {
+pub trait GlassExt: Styled + ParentElement + Sized {
     /// `.glass`: the thin window film, a hairline border and a soft drop shadow.
-    fn glass(self, cx: &gpui::App) -> Self {
+    fn glass(mut self, cx: &gpui::App) -> Self {
         let colors = cx.theme().colors;
-        self.bg(colors.surface)
+        let corner = current_radius(&mut self);
+        self.child(top_highlight_with(cx, corner))
+            .bg(colors.surface)
             .border_1()
             .border_color(colors.border)
             .shadow(vec![BoxShadow {
@@ -37,9 +44,11 @@ pub trait GlassExt: Styled + Sized {
 
     /// `.glass-overlay`: the near-opaque film dialogs, popovers, tooltips and toasts use,
     /// with the overlay border and its two drop shadows.
-    fn glass_overlay(self, cx: &gpui::App) -> Self {
+    fn glass_overlay(mut self, cx: &gpui::App) -> Self {
         let colors = cx.theme().colors;
-        self.bg(colors.overlay)
+        let corner = current_radius(&mut self);
+        self.child(top_highlight_with(cx, corner))
+            .bg(colors.overlay)
             .border_1()
             .border_color(colors.overlay_border)
             .shadow(vec![
@@ -67,18 +76,33 @@ pub trait GlassExt: Styled + Sized {
     }
 }
 
-impl<T: Styled + Sized> GlassExt for T {}
+impl<T: Styled + ParentElement + Sized> GlassExt for T {}
 
-/// The `inset 0 1px 0 var(--highlight)` edge: a 1px line along the top of a glass panel,
-/// to be placed as an absolutely positioned child of a `relative()` panel.
-pub fn top_highlight(cx: &gpui::App) -> Div {
+/// The element's top-left corner radius as set so far, or `rounded-lg`.
+fn current_radius<T: Styled>(element: &mut T) -> AbsoluteLength {
+    element
+        .style()
+        .corner_radii
+        .top_left
+        .unwrap_or_else(|| rpx(radius::LG).into())
+}
+
+fn top_highlight_with(cx: &gpui::App, corner: AbsoluteLength) -> Div {
     div()
         .absolute()
         .top(px(0.))
         .left(px(0.))
         .right(px(0.))
-        .h(px(1.))
-        .bg(cx.theme().colors.highlight)
+        .bottom(px(0.))
+        .rounded(corner)
+        .border_t_1()
+        .border_color(cx.theme().colors.highlight)
+}
+
+/// The `inset 0 1px 0 var(--highlight)` edge as a standalone child, for panels that do not
+/// go through [`GlassExt`]. `corner_css_px` is the panel's radius.
+pub fn top_highlight(cx: &gpui::App, corner_css_px: f32) -> Div {
+    top_highlight_with(cx, rpx(corner_css_px).into())
 }
 
 /// `.scrim`: the dimmed layer a modal lays over everything beneath it. Absolutely fills
