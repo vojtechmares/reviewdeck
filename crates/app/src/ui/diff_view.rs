@@ -95,8 +95,18 @@ type Highlights = Vec<Vec<LineStyles>>;
 /// when it arrives, so loading a grammar never stands between the reader and the code.
 enum Colour {
     Idle,
-    Pending { dark: bool, generation: u64 },
-    Ready { dark: bool, styles: Arc<Highlights> },
+    /// `previous` is the other theme's colours, kept on screen until the new ones
+    /// arrive: the TypeScript switched themes with a CSS variable pair, so the code
+    /// never lost its colour for a moment.
+    Pending {
+        dark: bool,
+        generation: u64,
+        previous: Option<Arc<Highlights>>,
+    },
+    Ready {
+        dark: bool,
+        styles: Arc<Highlights>,
+    },
 }
 
 /// A comment being written: where it lands, the text field, and what went wrong.
@@ -147,7 +157,7 @@ enum Coverage {
     Thread,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Notice {
     Binary,
     NoDiff,
@@ -538,7 +548,16 @@ impl DiffView {
         }
         self.next_generation += 1;
         let generation = self.next_generation;
-        file.colour = Colour::Pending { dark, generation };
+        let previous = match std::mem::replace(&mut file.colour, Colour::Idle) {
+            Colour::Ready { styles, .. } => Some(styles),
+            Colour::Pending { previous, .. } => previous,
+            Colour::Idle => None,
+        };
+        file.colour = Colour::Pending {
+            dark,
+            generation,
+            previous,
+        };
 
         let hunks = file.hunks.clone();
         let key = hash_of(&(file.patch_hash, language, dark));
@@ -587,6 +606,9 @@ impl DiffView {
             composer
                 .input
                 .update(cx, |input, cx| input.set_placeholder(placeholder, cx));
+            // Pressing the gutter button took the focus (so Escape could cancel the
+            // drag); the field gets it back, as the browser never took it away.
+            composer.input.read(cx).focus(window);
             self.rebuild(cx);
             cx.notify();
             return;
@@ -890,23 +912,34 @@ impl DiffView {
         };
         let renamed = file.status == FileStatus::Renamed && file.old_path != file.path;
 
-        let mut path = div()
-            .flex()
+        // `truncate`: one line, cut with an ellipsis when the path outgrows the header.
+        // The old name of a rename is part of the same run of text, in the muted colour.
+        let prefix = if renamed {
+            format!("{} \u{2192} ", file.old_path)
+        } else {
+            String::new()
+        };
+        let mut shown = StyledText::new(format!("{prefix}{}", file.path));
+        if !prefix.is_empty() {
+            shown = shown.with_highlights([(
+                0..prefix.len(),
+                HighlightStyle {
+                    color: Some(colors.muted_foreground),
+                    ..Default::default()
+                },
+            )]);
+        }
+        let path = div()
             .min_w_0()
+            .flex_1()
             .overflow_hidden()
             .whitespace_nowrap()
+            .text_ellipsis()
             .font_family(mono_font())
             .text_size(rpx(CODE_SIZE))
             .line_height(rpx(CODE_LINE))
-            .font_weight(FontWeight::MEDIUM);
-        if renamed {
-            path = path.child(
-                div()
-                    .text_color(colors.muted_foreground)
-                    .child(format!("{} \u{2192} ", file.old_path)),
-            );
-        }
-        path = path.child(file.path.clone());
+            .font_weight(FontWeight::MEDIUM)
+            .child(shown);
 
         div()
             .flex()
@@ -917,6 +950,7 @@ impl DiffView {
             .child(
                 div()
                     .id(("diff-file", ix))
+                    .debug_selector(|| format!("diff-file-{f}"))
                     .flex()
                     .flex_1()
                     .min_w_0()
@@ -947,7 +981,7 @@ impl DiffView {
                 div()
                     .flex()
                     .flex_none()
-                    .gap(rpx(SMALL_SIZE * 0.35))
+                    .gap(rpx(SMALL_SIZE * 0.6))
                     .font_family(mono_font())
                     .text_size(rpx(SMALL_SIZE))
                     .line_height(rpx(SMALL_LINE))
@@ -1061,6 +1095,10 @@ impl DiffView {
         let Some((f, h, side, l)) = pick else {
             return cell;
         };
+        let side_name = if side == Side::Old { "old" } else { "new" };
+        if let Some(value) = value {
+            cell = cell.debug_selector(|| format!("diff-gutter-{f}-{side_name}-{value}"));
+        }
         // The pointer arriving over this cell is how a range grows. Only while one is
         // being drawn is anyone listening.
         if self.selecting.is_some() {
@@ -1074,6 +1112,7 @@ impl DiffView {
         cell.child(
             div()
                 .id(("diff-comment", ix * 4 + column))
+                .debug_selector(|| format!("diff-comment-{f}-{side_name}-{}", value.unwrap_or(0)))
                 .absolute()
                 .left(rpx(-2.))
                 .top(relative(0.5))
@@ -1139,15 +1178,31 @@ impl DiffView {
             .cloned()
             .unwrap_or_default();
         let mut styled = StyledText::new(text);
-        if let Colour::Ready { styles, .. } = &file.colour
-            && let Some(runs) = styles
-                .get(h)
-                .and_then(|lines| lines.get(l))
-                .and_then(Option::as_ref)
+        let (Colour::Ready { styles, .. }
+        | Colour::Pending {
+            previous: Some(styles),
+            ..
+        }) = &file.colour
+        else {
+            return self.code_body(colors, tint, marker, styled);
+        };
+        if let Some(runs) = styles
+            .get(h)
+            .and_then(|lines| lines.get(l))
+            .and_then(Option::as_ref)
         {
             styled = styled.with_highlights(runs.iter().cloned());
         }
+        self.code_body(colors, tint, marker, styled)
+    }
 
+    fn code_body(
+        &self,
+        colors: crate::ui::theme::Colors,
+        tint: Option<Hsla>,
+        marker: &'static str,
+        styled: StyledText,
+    ) -> Div {
         div()
             .relative()
             .flex_1()
@@ -1350,6 +1405,7 @@ impl DiffView {
         };
 
         div()
+            .debug_selector(|| format!("diff-composer-{f}"))
             .m(rpx(6.))
             .p(rpx(8.))
             .rounded(rpx(radius::MD))
@@ -1790,5 +1846,471 @@ mod tests {
         assert_eq!(stretch(&hunk, Side::New, &target, 0), Some(2));
         // The other side cannot be stretched to.
         assert_eq!(stretch(&hunk, Side::Old, &target, 0), None);
+    }
+
+    // ----- interaction tests -----------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use gpui::{Modifiers, Point, TestAppContext, VisualTestContext};
+    use reviewdeck_core::demo::DEMO_ITEMS;
+    use reviewdeck_core::http::{Http, MockResponse};
+    use reviewdeck_core::store::{MemoryTokens, TokenStore, Vault};
+
+    use crate::state::{AppDeps, AppState};
+    use crate::ui::theme::Theme;
+
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    fn rig(cx: &mut TestAppContext, mode: DiffViewMode, dark: bool) -> Entity<AppState> {
+        let dir = std::env::temp_dir().join(format!(
+            "reviewdeck-diff-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tokens: Arc<dyn TokenStore> = Arc::new(MemoryTokens::new());
+        let vault = Arc::new(Vault::open_at(dir.join("reviewdeck.json"), tokens));
+        vault
+            .save_settings(|settings| settings.diff_view = mode)
+            .expect("settings are saved");
+        let state = cx.new(|cx| {
+            AppState::new(
+                AppDeps {
+                    http: Http::mock(|_| MockResponse::new(500, Vec::new())),
+                    vault,
+                    remote: None,
+                    demo: true,
+                    clock: None,
+                    notify: None,
+                    tray: None,
+                },
+                cx,
+            )
+        });
+        cx.update(|cx| {
+            cx.set_global(GlobalState(state.clone()));
+            cx.set_global(Theme::new(dark));
+            crate::ui::components::bind_keys(cx);
+        });
+        drop(state.update(cx, |state, cx| state.refresh(cx)));
+        state
+    }
+
+    fn item_id() -> String {
+        DEMO_ITEMS[0].id.clone()
+    }
+
+    const PATCH: &str =
+        "@@ -1,5 +1,6 @@\n fn a() {\n-    old();\n+    new();\n+    more();\n }\n \n fn b() {}";
+
+    fn file(path: &str, patch: Option<&str>, binary: bool, status: FileStatus) -> DiffFile {
+        DiffFile {
+            path: path.into(),
+            old_path: path.into(),
+            status,
+            additions: 2,
+            deletions: 1,
+            patch: patch.map(str::to_string),
+            binary,
+        }
+    }
+
+    fn lib() -> Vec<DiffFile> {
+        vec![file("src/lib.rs", Some(PATCH), false, FileStatus::Modified)]
+    }
+
+    fn open_view_for(
+        cx: &mut TestAppContext,
+        item: String,
+        files: Vec<DiffFile>,
+        threads: Vec<CommentThread>,
+    ) -> (Entity<DiffView>, &mut VisualTestContext) {
+        let (view, vcx) = cx.add_window_view(|window, cx| {
+            DiffView::new(
+                item,
+                Arc::new(files),
+                Arc::new(threads),
+                DiffRefs::default(),
+                window,
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        (view, vcx)
+    }
+
+    fn open_view(
+        cx: &mut TestAppContext,
+        files: Vec<DiffFile>,
+        threads: Vec<CommentThread>,
+    ) -> (Entity<DiffView>, &mut VisualTestContext) {
+        open_view_for(cx, item_id(), files, threads)
+    }
+
+    fn bounds(vcx: &mut VisualTestContext, selector: String) -> gpui::Bounds<gpui::Pixels> {
+        let name: &'static str = Box::leak(selector.into_boxed_str());
+        vcx.debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} was not drawn"))
+    }
+
+    fn centre(vcx: &mut VisualTestContext, selector: String) -> Point<gpui::Pixels> {
+        bounds(vcx, selector).center()
+    }
+
+    /// Hover a line's gutter (which shows its button) and press on the button.
+    fn press(vcx: &mut VisualTestContext, side: &str, line: u32, modifiers: Modifiers) {
+        let gutter = centre(vcx, format!("diff-gutter-0-{side}-{line}"));
+        vcx.simulate_mouse_move(gutter, None, Modifiers::none());
+        let button = centre(vcx, format!("diff-comment-0-{side}-{line}"));
+        vcx.simulate_mouse_down(button, MouseButton::Left, modifiers);
+    }
+
+    fn release(vcx: &mut VisualTestContext, side: &str, line: u32) {
+        let at = centre(vcx, format!("diff-gutter-0-{side}-{line}"));
+        vcx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    }
+
+    fn composer_target(
+        view: &Entity<DiffView>,
+        vcx: &mut VisualTestContext,
+    ) -> Option<CommentTarget> {
+        view.read_with(vcx, |view, _| {
+            view.files[0].composer.as_ref().map(|c| c.target.clone())
+        })
+    }
+
+    #[gpui::test]
+    fn a_click_on_a_split_gutter_opens_a_single_line_composer(cx: &mut TestAppContext) {
+        rig(cx, DiffViewMode::Split, false);
+        let (view, vcx) = open_view(cx, lib(), vec![]);
+        press(vcx, "new", 3, Modifiers::none());
+        release(vcx, "new", 3);
+        let target = composer_target(&view, vcx).expect("a composer opens");
+        assert_eq!(target.new_line, Some(3));
+        assert_eq!(target.old_line, None);
+        assert!(target.range.is_none());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("diff-composer-0").is_some(),
+            "the composer row is drawn"
+        );
+    }
+
+    #[gpui::test]
+    fn a_click_on_a_unified_gutter_opens_a_composer_on_either_side(cx: &mut TestAppContext) {
+        rig(cx, DiffViewMode::Unified, false);
+        let (view, vcx) = open_view(cx, lib(), vec![]);
+        press(vcx, "old", 2, Modifiers::none());
+        release(vcx, "old", 2);
+        let target = composer_target(&view, vcx).expect("a composer opens on the removed line");
+        assert_eq!((target.old_line, target.new_line), (Some(2), None));
+        press(vcx, "new", 3, Modifiers::none());
+        release(vcx, "new", 3);
+        let target = composer_target(&view, vcx).expect("and on the added line");
+        assert_eq!((target.old_line, target.new_line), (None, Some(3)));
+    }
+
+    #[gpui::test]
+    fn dragging_along_the_gutter_makes_a_range_and_shift_stretches_it(cx: &mut TestAppContext) {
+        rig(cx, DiffViewMode::Split, false);
+        let (view, vcx) = open_view(cx, lib(), vec![]);
+        press(vcx, "new", 2, Modifiers::none());
+        let over = centre(vcx, "diff-gutter-0-new-3".into());
+        vcx.simulate_mouse_move(over, MouseButton::Left, Modifiers::none());
+        release(vcx, "new", 3);
+        let target = composer_target(&view, vcx).expect("a range composer opens");
+        assert_eq!(target.new_line, Some(3));
+        assert_eq!(target.range.map(|r| r.start_line), Some(2));
+
+        // Shift-click a line below stretches the range to take it in.
+        press(vcx, "new", 5, Modifiers::shift());
+        release(vcx, "new", 5);
+        let target = composer_target(&view, vcx).expect("still open");
+        assert_eq!(target.new_line, Some(5));
+        assert_eq!(target.range.map(|r| r.start_line), Some(2));
+    }
+
+    #[gpui::test]
+    fn escape_while_dragging_drops_the_range(cx: &mut TestAppContext) {
+        rig(cx, DiffViewMode::Split, false);
+        let (view, vcx) = open_view(cx, lib(), vec![]);
+        press(vcx, "new", 2, Modifiers::none());
+        assert!(view.read_with(vcx, |v, _| v.selecting.is_some()));
+        vcx.simulate_keystrokes("escape");
+        assert!(view.read_with(vcx, |v, _| v.selecting.is_none()));
+        release(vcx, "new", 2);
+        assert!(
+            composer_target(&view, vcx).is_none(),
+            "nothing was commented on"
+        );
+    }
+
+    #[gpui::test]
+    fn cmd_enter_saves_the_draft_and_escape_cancels(cx: &mut TestAppContext) {
+        let state = rig(cx, DiffViewMode::Split, false);
+        let (view, vcx) = open_view(cx, lib(), vec![]);
+        press(vcx, "new", 3, Modifiers::none());
+        release(vcx, "new", 3);
+        vcx.simulate_input("looks fine");
+        // Pressing the same line's button again keeps the text and the focus.
+        press(vcx, "new", 3, Modifiers::none());
+        release(vcx, "new", 3);
+        vcx.simulate_input("!");
+        assert_eq!(
+            view.read_with(vcx, |v, cx| v.files[0].composer.as_ref().map(|c| c
+                .input
+                .read(cx)
+                .text()
+                .to_string())),
+            Some("looks fine!".to_string())
+        );
+        vcx.simulate_keystrokes("escape");
+        assert!(
+            composer_target(&view, vcx).is_none(),
+            "escape closes the composer"
+        );
+        assert!(state.read_with(vcx, |s, _| s.drafts(&item_id()).is_empty()));
+
+        press(vcx, "new", 3, Modifiers::none());
+        release(vcx, "new", 3);
+        vcx.simulate_keystrokes("cmd-enter");
+        assert!(
+            composer_target(&view, vcx).is_some(),
+            "an empty comment is not sent"
+        );
+        vcx.simulate_input("  looks fine  ");
+        vcx.simulate_keystrokes("cmd-enter");
+        assert!(
+            composer_target(&view, vcx).is_none(),
+            "sending closes the composer"
+        );
+        let drafts = state.read_with(vcx, |s, _| s.drafts(&item_id()));
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].body, "looks fine");
+        assert_eq!(
+            (drafts[0].path.as_str(), drafts[0].new_line),
+            ("src/lib.rs", Some(3))
+        );
+        vcx.run_until_parked();
+        assert_eq!(view.read_with(vcx, |v, _| v.files[0].drafts.len()), 1);
+        assert!(view.read_with(vcx, |v, _| {
+            v.entries.iter().any(|e| matches!(e.item, Item::Draft(..)))
+        }));
+    }
+
+    #[gpui::test]
+    fn a_failed_save_keeps_the_composer_and_its_text(cx: &mut TestAppContext) {
+        rig(cx, DiffViewMode::Split, false);
+        // A pull request the deck does not hold: the save is refused.
+        let (view, vcx) = open_view_for(cx, "not-in-the-deck".into(), lib(), vec![]);
+        press(vcx, "new", 3, Modifiers::none());
+        release(vcx, "new", 3);
+        vcx.simulate_input("keep me");
+        vcx.simulate_keystrokes("cmd-enter");
+        let (open, error, text) = view.read_with(vcx, |v, cx| {
+            let c = v.files[0].composer.as_ref();
+            (
+                c.is_some(),
+                c.and_then(|c| c.error.clone()),
+                c.map(|c| c.input.read(cx).text().to_string()),
+            )
+        });
+        assert!(open);
+        assert_eq!(
+            error.as_ref().map(|e| e.as_ref()),
+            Some("That pull request is no longer in the deck.")
+        );
+        assert_eq!(text.as_deref(), Some("keep me"));
+    }
+
+    #[gpui::test]
+    fn the_header_collapses_and_a_big_file_starts_collapsed(cx: &mut TestAppContext) {
+        rig(cx, DiffViewMode::Split, false);
+        let big = format!(
+            "@@ -0,0 +1,700 @@\n{}",
+            (0..700)
+                .map(|n| format!("+line {n}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let (view, vcx) = open_view(
+            cx,
+            vec![
+                file("src/lib.rs", Some(PATCH), false, FileStatus::Modified),
+                file("big.txt", Some(&big), false, FileStatus::Added),
+                file("logo.png", None, true, FileStatus::Added),
+                file("empty.txt", None, false, FileStatus::Modified),
+            ],
+            vec![],
+        );
+        let (open, notice) = view.read_with(vcx, |v, _| {
+            (
+                v.files.iter().map(|f| f.open).collect::<Vec<_>>(),
+                v.entries
+                    .iter()
+                    .any(|e| e.item == Item::Notice(1, Notice::Collapsed)),
+            )
+        });
+        assert_eq!(open, vec![true, false, false, false]);
+        assert!(notice, "a collapsed big file says so");
+        let rows_before = view.read_with(vcx, |v, _| v.entries.len());
+        let header = centre(vcx, "diff-file-0".into());
+        vcx.simulate_click(header, Modifiers::none());
+        assert!(!view.read_with(vcx, |v, _| v.files[0].open));
+        assert!(view.read_with(vcx, |v, _| v.entries.len()) < rows_before);
+        for f in [2, 3] {
+            let at = centre(vcx, format!("diff-file-{f}"));
+            vcx.simulate_click(at, Modifiers::none());
+        }
+        let notices = view.read_with(vcx, |v, _| {
+            v.entries
+                .iter()
+                .filter_map(|e| match e.item {
+                    Item::Notice(f, n) if f >= 2 => Some((f, n)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(notices, vec![(2, Notice::Binary), (3, Notice::NoDiff)]);
+    }
+
+    fn thread(id: &str, line: u32, start: Option<u32>, side: Side) -> CommentThread {
+        CommentThread {
+            id: id.into(),
+            comments: vec![],
+            resolved: false,
+            outdated: false,
+            path: Some("src/lib.rs".into()),
+            line: Some(line),
+            start_line: start,
+            side: Some(side),
+            can_reply: false,
+            can_resolve: false,
+        }
+    }
+
+    #[gpui::test]
+    fn threads_sit_under_their_line_in_both_layouts(cx: &mut TestAppContext) {
+        for mode in [DiffViewMode::Split, DiffViewMode::Unified] {
+            rig(cx, mode, false);
+            let mut elsewhere = thread("gone", 3, None, Side::New);
+            elsewhere.path = Some("other.rs".into());
+            let mut outdated = thread("outdated", 3, None, Side::New);
+            outdated.line = None;
+            let (view, vcx) = open_view(
+                cx,
+                lib(),
+                vec![thread("t", 3, Some(2), Side::New), elsewhere, outdated],
+            );
+            let order = view.read_with(vcx, |v, _| {
+                v.entries.iter().map(|e| e.item).collect::<Vec<_>>()
+            });
+            let count = order
+                .iter()
+                .filter(|i| matches!(i, Item::Thread(..)))
+                .count();
+            assert_eq!(count, 1, "only the thread on a line of this file shows");
+            let at = order
+                .iter()
+                .position(|i| matches!(i, Item::Thread(..)))
+                .unwrap();
+            let before = order[at - 1];
+            match mode {
+                DiffViewMode::Unified => {
+                    let Item::Line(_, h, l) = before else {
+                        panic!("a code row precedes the thread")
+                    };
+                    let line = view.read_with(vcx, |v, _| v.files[0].hunks[h].lines[l].clone());
+                    assert_eq!(line.new_line, Some(3));
+                }
+                DiffViewMode::Split => assert!(matches!(before, Item::Row(..))),
+            }
+            let tinted = view.read_with(vcx, |v, _| {
+                v.files[0].hunks[0]
+                    .lines
+                    .iter()
+                    .filter(|l| v.coverage(0, Side::New, l) == Some(Coverage::Thread))
+                    .count()
+            });
+            assert_eq!(tinted, 2, "lines 2 and 3 are covered");
+        }
+    }
+
+    #[gpui::test]
+    fn switching_the_theme_keeps_the_old_colours_until_the_new_ones_arrive(
+        cx: &mut TestAppContext,
+    ) {
+        rig(cx, DiffViewMode::Split, false);
+        let (view, vcx) = open_view(cx, lib(), vec![]);
+        vcx.run_until_parked();
+        assert!(
+            view.read_with(vcx, |v, _| matches!(
+                v.files[0].colour,
+                Colour::Ready { dark: false, .. }
+            )),
+            "the light colours arrive"
+        );
+        vcx.update(|_, cx| cx.set_global(Theme::new(true)));
+        view.update(vcx, |v, cx| {
+            v.request_colour(0, true, cx);
+            assert!(
+                matches!(
+                    v.files[0].colour,
+                    Colour::Pending {
+                        previous: Some(_),
+                        ..
+                    }
+                ),
+                "the old colours stay while the new ones are worked out"
+            );
+        });
+        vcx.run_until_parked();
+        assert!(view.read_with(vcx, |v, _| matches!(
+            v.files[0].colour,
+            Colour::Ready { dark: true, .. }
+        )));
+    }
+
+    #[gpui::test]
+    fn a_five_thousand_line_diff_builds_only_what_is_near_the_viewport(cx: &mut TestAppContext) {
+        rig(cx, DiffViewMode::Unified, false);
+        let n = 5000;
+        let patch = format!(
+            "@@ -1,{n} +1,{n} @@\n{}",
+            (0..n)
+                .map(|i| if i % 3 == 0 {
+                    format!("-old {i}\n+new {i}")
+                } else {
+                    format!(" ctx {i}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let started = std::time::Instant::now();
+        let (view, vcx) = open_view(
+            cx,
+            vec![file("big.rs", Some(&patch), false, FileStatus::Modified)],
+            vec![],
+        );
+        // It starts collapsed past 600 lines; open it.
+        let at = centre(vcx, "diff-file-0".into());
+        vcx.simulate_click(at, Modifiers::none());
+        let rows = view.read_with(vcx, |v, _| v.entries.len());
+        assert!(rows > 5000);
+        let drawn = (1..=n + 1)
+            .filter(|number| {
+                let name: &'static str =
+                    Box::leak(format!("diff-gutter-0-new-{number}").into_boxed_str());
+                vcx.debug_bounds(name).is_some()
+            })
+            .count();
+        assert!(
+            drawn < 150,
+            "only the rows near the viewport are built, got {drawn}"
+        );
+        assert!(
+            started.elapsed().as_secs() < 20,
+            "opening and drawing stays bounded"
+        );
     }
 }
