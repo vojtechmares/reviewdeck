@@ -15,6 +15,7 @@ path = "src/lib.rs"
 futures.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
+pulldown-cmark.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
