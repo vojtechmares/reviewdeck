@@ -1,4 +1,6 @@
 //! The views: a port of src/renderer.
+// Removed at integration, once main.rs reaches every view.
+#![allow(dead_code)]
 
 pub mod accounts_dialog;
 pub mod app_view;
