@@ -794,7 +794,7 @@ impl PullView {
             .items_center()
             .gap(rpx(6.))
             .child(check_pill(&item.checks, cx))
-            .child(approval_badge(&item.approvals, cx))
+            .child(approval_badge(&item.approvals, "pull-approvals", cx))
             .child(
                 Badge::new()
                     .child(
