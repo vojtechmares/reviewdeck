@@ -64,6 +64,37 @@ pub fn bind_keys(cx: &mut App) {
     ]);
     input::bind_keys(cx);
     select::bind_keys(cx);
+
+    // Any key that is not a menu shortcut means the keyboard is in use.
+    cx.set_global(KeyboardModality(false));
+    cx.observe_keystrokes(|event, _, cx| {
+        if !event.keystroke.modifiers.platform && !focus_visible(cx) {
+            cx.set_global(KeyboardModality(true));
+        }
+    })
+    .detach();
+}
+
+/// Whether the user is moving around with the keyboard: the browser's `:focus-visible`
+/// heuristic. A key press that is not a menu shortcut turns it on, a mouse press anywhere
+/// turns it off, and a control only draws its focus ring while it is on - so a dialog that
+/// opens on a click and focuses its first control shows no ring, as it did in Electron,
+/// while Tab still shows where focus went.
+struct KeyboardModality(bool);
+
+impl gpui::Global for KeyboardModality {}
+
+/// Whether focus rings are showing right now.
+pub fn focus_visible(cx: &App) -> bool {
+    cx.try_global::<KeyboardModality>()
+        .is_some_and(|modality| modality.0)
+}
+
+/// Call from the window root's mouse-down capture: a pointer press ends keyboard modality.
+pub fn pointer_pressed(cx: &mut App) {
+    if focus_visible(cx) {
+        cx.set_global(KeyboardModality(false));
+    }
 }
 
 /// Keyboard focus for the clickable controls, the way a browser gives every `<button>` a tab
@@ -71,22 +102,26 @@ pub fn bind_keys(cx: &mut App) {
 ///
 /// gpui already fires `on_click` for Enter and Space on a focused element. It has no
 /// `:focus-visible`, so a mouse press is stopped from moving focus at all (the press still
-/// clicks); only Tab focuses the control, and so only Tab shows the ring. The ring is a 2px
-/// spread shadow: gpui has no outline offset.
+/// clicks), and the ring only draws while [`focus_visible`] says the keyboard is in use.
+/// The ring is a 2px spread shadow: gpui has no outline offset.
 pub trait FocusRing: StatefulInteractiveElement + Styled + Sized {
     fn focus_ring(self, cx: &App) -> Self {
         let ring = cx.theme().colors.ring;
-        self.focusable()
+        let element = self
+            .focusable()
             .tab_stop(true)
-            .capture_any_mouse_down(|_, window, _| window.prevent_default())
-            .focus(move |style| {
-                style.shadow(vec![BoxShadow {
-                    color: ring,
-                    offset: point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(2.),
-                }])
-            })
+            .capture_any_mouse_down(|_, window, _| window.prevent_default());
+        if !focus_visible(cx) {
+            return element;
+        }
+        element.focus(move |style| {
+            style.shadow(vec![BoxShadow {
+                color: ring,
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(0.),
+                spread_radius: px(2.),
+            }])
+        })
     }
 }
 

@@ -1231,6 +1231,8 @@ impl Render for AppView {
         div()
             .key_context("AppView")
             .track_focus(&self.focus)
+            // A pointer press anywhere ends keyboard modality (`:focus-visible`).
+            .capture_any_mouse_down(|_, _, cx| crate::ui::components::pointer_pressed(cx))
             .on_action(cx.listener(|this, _: &SelectNext, window, cx| this.step(1, window, cx)))
             .on_action(cx.listener(|this, _: &SelectPrev, window, cx| this.step(-1, window, cx)))
             .on_action(cx.listener(Self::focus_search))

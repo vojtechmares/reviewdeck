@@ -169,7 +169,6 @@ impl RenderOnce for CheckPill {
         let panel = if checks.total == 0 {
             div()
                 .w(rpx(288.))
-                .my(rpx(-4.))
                 .px(rpx(12.))
                 .py(rpx(10.))
                 .text_size(rpx(11.5))
@@ -251,7 +250,7 @@ impl RenderOnce for CheckPill {
                             ),
                     )
             });
-            div().w(rpx(288.)).my(rpx(-4.)).child(header).child(
+            div().w(rpx(288.)).child(header).child(
                 div()
                     .id(SharedString::from(format!("{}-runs", self.id)))
                     .max_h(rpx(320.))

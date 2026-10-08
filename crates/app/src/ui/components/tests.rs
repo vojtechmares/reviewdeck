@@ -184,6 +184,25 @@ fn tab_reaches_a_button_and_enter_activates_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn focus_rings_show_only_while_the_keyboard_is_in_use(cx: &mut TestAppContext) {
+    init(cx);
+    let (_host, cx) = window(cx, |_, _| Button::new("go").child("Go").into_any_element());
+    // A control focused by the app (a dialog opening on a click) draws no ring.
+    assert!(!cx.update(|_, cx| super::focus_visible(cx)));
+    // Tab means the keyboard is in use: the ring shows where focus goes.
+    cx.simulate_keystrokes("tab");
+    assert!(cx.update(|_, cx| super::focus_visible(cx)));
+    // A menu shortcut does not change anything...
+    cx.update(|_, cx| super::pointer_pressed(cx));
+    cx.simulate_keystrokes("cmd-c");
+    assert!(!cx.update(|_, cx| super::focus_visible(cx)));
+    // ...and a pointer press ends it.
+    cx.simulate_keystrokes("tab");
+    cx.update(|_, cx| super::pointer_pressed(cx));
+    assert!(!cx.update(|_, cx| super::focus_visible(cx)));
+}
+
+#[gpui::test]
 fn a_ghost_button_recolours_its_text_on_hover(cx: &mut TestAppContext) {
     init(cx);
     let (_host, cx) = window(cx, |_, _| {
