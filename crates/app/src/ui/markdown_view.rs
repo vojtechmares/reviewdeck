@@ -8,7 +8,10 @@
 //! renders the cached tree. Render itself never parses or highlights.
 //!
 //! Known differences from the browser page, all because gpui has no per-run size,
-//! no baseline shift and no CSS borders on text runs:
+//! no baseline shift, no CSS borders on text runs and no table layout:
+//! - tables are laid out by row with the columns sharing the width by an estimate of
+//!   their content (see [`table_element`]), not by the browser's table algorithm;
+//! - the footnote section has a rule and no hidden heading or back-reference arrows;
 //! - inline code, `sub`, `sup` and `kbd` keep the body size (they are monospace or
 //!   plain; `kbd` loses its border and keeps the surface colour);
 //! - links are coloured but not underlined on hover, and only http(s) links open;
@@ -16,6 +19,7 @@
 //! - footnote references are the plain number;
 //! - text selection is not available: gpui cannot select static text.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -24,8 +28,8 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, AsyncApp, ClickEvent, Context, CursorStyle, FontStyle, FontWeight, Hsla,
-    Image, InteractiveText, Render, SharedString, StrikethroughStyle, StyledText, Task, TextRun,
-    UnderlineStyle, WeakEntity, Window, div, font, img, px, relative, svg,
+    Image, InteractiveText, ObjectFit, Render, SharedString, StrikethroughStyle, StyledText, Task,
+    TextRun, UnderlineStyle, WeakEntity, Window, div, font, img, px, relative, svg,
 };
 use reviewdeck_core::images::ImageSource;
 use reviewdeck_core::markdown::{
@@ -157,6 +161,10 @@ struct Env<'a> {
     dark: bool,
     open: &'a HashMap<usize, bool>,
     images: Option<&'a ImageLoader>,
+    /// Counts the texts built so far in this frame, which names each one for gpui
+    /// (see [`text_element`]). The tree is walked in the same order every frame, so
+    /// the n-th text is the same text from one frame to the next.
+    texts: Cell<usize>,
 }
 
 /// The text style inherited from the enclosing elements. Runs carry their own font
@@ -411,7 +419,7 @@ fn inline_element(
     let mixed = pieces.iter().any(|piece| !matches!(piece, Piece::Text(_)));
     if !mixed {
         return match pieces.into_iter().next() {
-            Some(Piece::Text(flow)) => text_element(flow),
+            Some(Piece::Text(flow)) => text_element(flow, env),
             _ => div().into_any_element(),
         };
     }
@@ -425,7 +433,7 @@ fn inline_element(
     for piece in pieces {
         row = match piece {
             Piece::Text(flow) if flow.text.is_empty() => row,
-            Piece::Text(flow) => row.child(text_element(flow)),
+            Piece::Text(flow) => row.child(text_element(flow, env)),
             Piece::Image(image) => row.child(image_element(image, env, cx)),
             Piece::Check(checked) => row.child(checkbox(checked, &env.colors)),
         };
@@ -433,14 +441,17 @@ fn inline_element(
     row.into_any_element()
 }
 
-fn text_element(flow: Flow) -> AnyElement {
+fn text_element(flow: Flow, env: &Env<'_>) -> AnyElement {
     let Flow { text, runs, links } = flow;
     if text.is_empty() {
         return div().into_any_element();
     }
-    // The address of the run list names this text for the whole life of the tree,
-    // which is what gpui needs to keep the hover and click state of a link.
-    let id_key = runs.as_ptr() as usize;
+    // gpui keeps the hover and click state of a link under the element's id, and a
+    // press and its release arrive in different frames, so the id has to be the same
+    // in both. The run list is rebuilt every frame (its address is not stable);
+    // the position of the text in the walk is.
+    let id_key = env.texts.get();
+    env.texts.set(id_key + 1);
     let styled = StyledText::new(SharedString::from(text)).with_runs(runs);
     if links.is_empty() {
         return styled.into_any_element();
@@ -528,29 +539,43 @@ fn image_element(
         }
         ImageSource::Blocked => return alt_element(&alt, base),
     };
-    el = match image.width {
-        Some(Length::Pixels(v)) => el.w(rpx(v)),
-        Some(Length::Percent(v)) => el.w(relative(v / 100.)),
-        None => el,
-    };
-    el = match image.height {
-        Some(Length::Pixels(v)) => el.h(rpx(v)),
-        Some(Length::Percent(v)) => el.h(relative(v / 100.)),
-        None => el,
+    // `.md img { max-width: 100%; height: auto }` and, for a comment on a diff line,
+    // `.md-compact img { width: auto; max-height: 14rem }`: the stylesheet beats the
+    // `width` and `height` attributes of the tag, so the height attribute never
+    // counts, and the width attribute only outside the compact scale. Whatever the
+    // box ends up as, the picture is drawn inside it at its own proportions, so a
+    // clamped dimension never stretches it.
+    el = match (image.width, env.m.compact) {
+        (Some(Length::Pixels(v)), false) => el.w(rpx(v)),
+        // A percentage of the column; the height, a percentage of nothing, follows
+        // from the proportions of the picture.
+        (Some(Length::Percent(v)), false) => el.w(relative(v / 100.)).h(relative(1.)),
+        _ => el,
     };
     if let Some(max) = env.m.max_image_height {
         el = el.max_h(rpx(max));
     }
     el.max_w(relative(1.))
+        .object_fit(ObjectFit::Contain)
         .rounded(rpx(6.))
         .with_fallback(move || alt_element(&alt, base))
         .into_any_element()
 }
 
 /// Stacks blocks vertically, collapsing the margins between neighbours the way CSS
-/// does: the larger of the two wins. The first top and the last bottom margin are
-/// dropped, as `.md > *:first-child` and `:last-child` do.
-fn stack(children: Vec<(Gap, AnyElement)>) -> AnyElement {
+/// does: the larger of the two wins.
+///
+/// The margins at the two ends are not applied but handed back as a [`Gap`], because
+/// what happens to them depends on the box around the stack. A box with no padding
+/// or border above and below (a block quote, a list item, a plain `div`) lets them
+/// collapse through into its own margins: [`through`]. A box with either (`details`,
+/// a table cell) keeps them inside: [`enclosed`]. The root and an alert drop them,
+/// as `.md > *:first-child` and the alert's `[&>:first-child]:mt-0` do.
+fn stack(children: Vec<(Gap, AnyElement)>) -> (Gap, AnyElement) {
+    let edges = Gap {
+        top: children.first().map_or(0., |(gap, _)| gap.top),
+        bottom: children.last().map_or(0., |(gap, _)| gap.bottom),
+    };
     let mut column = div().flex().flex_col().min_w_0();
     let mut above = 0.;
     for (index, (gap, element)) in children.into_iter().enumerate() {
@@ -558,20 +583,50 @@ fn stack(children: Vec<(Gap, AnyElement)>) -> AnyElement {
         above = gap.bottom;
         column = column.child(div().pt(rpx(top)).min_w_0().child(element));
     }
-    column.into_any_element()
+    (edges, column.into_any_element())
 }
 
+/// A box's own margins combined with the ones that collapsed through it from its
+/// first and last child.
+fn through(own: Gap, inner: Gap) -> Gap {
+    Gap {
+        top: own.top.max(inner.top),
+        bottom: own.bottom.max(inner.bottom),
+    }
+}
+
+/// A stack's end margins kept inside the box that holds it.
+fn enclosed(edges: Gap, element: AnyElement) -> AnyElement {
+    div()
+        .pt(rpx(edges.top))
+        .pb(rpx(edges.bottom))
+        .min_w_0()
+        .child(element)
+        .into_any_element()
+}
+
+/// Blocks stacked, with the margins at the two ends handed back (see [`stack`]).
+fn blocks_stack(
+    blocks: &[Block],
+    env: &Env<'_>,
+    base: Base,
+    cx: &mut Context<MarkdownView>,
+) -> (Gap, AnyElement) {
+    let children = blocks
+        .iter()
+        .map(|block| block_child(block, env, base, cx, false))
+        .collect();
+    stack(children)
+}
+
+/// Blocks stacked with the end margins dropped.
 fn blocks_element(
     blocks: &[Block],
     env: &Env<'_>,
     base: Base,
     cx: &mut Context<MarkdownView>,
 ) -> AnyElement {
-    let children = blocks
-        .iter()
-        .map(|block| block_child(block, env, base, cx, false))
-        .collect();
-    stack(children)
+    blocks_stack(blocks, env, base, cx).1
 }
 
 /// One block, with the margins it has. `in_item` is set for a block inside a list
@@ -626,13 +681,14 @@ fn block_child(
                 color: colors.muted_foreground,
                 ..base
             };
+            let (edges, body) = blocks_stack(blocks, env, inner, cx);
             let el = div()
                 .border_l(px(3.))
                 .border_color(colors.border_strong)
                 .pl(rpx(m.quote_pad))
                 .text_color(colors.muted_foreground)
-                .child(blocks_element(blocks, env, inner, cx));
-            (Gap::both(m.gap), el.into_any_element())
+                .child(body);
+            (through(Gap::both(m.gap), edges), el.into_any_element())
         }
         Block::Alert { kind, blocks } => (
             Gap::both(0.7 * m.size),
@@ -642,8 +698,9 @@ fn block_child(
             (Gap::both(m.gap), code_block(lang.as_deref(), text, env))
         }
         Block::List(list) => {
-            let gap = if in_item { 0.2 * m.size } else { m.gap };
-            (Gap::both(gap), list_element(list, env, base, cx))
+            let own = if in_item { 0.2 * m.size } else { m.gap };
+            let (edges, el) = list_element(list, env, base, cx);
+            (through(Gap::both(own), edges), el)
         }
         Block::Table(table) => (Gap::both(m.gap), table_element(table, env, base, cx)),
         Block::Rule => {
@@ -669,11 +726,8 @@ fn block_child(
                 Some(Alignment::Right) => el.text_right(),
                 _ => el,
             };
-            (
-                Gap::NONE,
-                el.child(blocks_element(blocks, env, inner, cx))
-                    .into_any_element(),
-            )
+            let (edges, body) = blocks_stack(blocks, env, inner, cx);
+            (through(Gap::NONE, edges), el.child(body).into_any_element())
         }
     }
 }
@@ -700,6 +754,7 @@ fn alert_element(
         .gap(rpx(6.))
         .mb(rpx(4.))
         .text_size(rpx(12.))
+        .line_height(rpx(12. * env.m.line / env.m.size))
         .font_weight(FontWeight(600.))
         .text_color(tone)
         .child(
@@ -736,7 +791,8 @@ fn code_block(lang: Option<&str>, text: &str, env: &Env<'_>) -> AnyElement {
         .flatten();
     let m = env.m;
     let mut column = div().flex().flex_col();
-    for (index, line) in text.split('\n').enumerate() {
+    // An empty fence is an empty `pre`: padding and border, no line.
+    for (index, line) in text.split('\n').filter(|_| !text.is_empty()).enumerate() {
         let tokens = tokens
             .as_ref()
             .and_then(|lines| lines.get(index))
@@ -759,10 +815,47 @@ fn code_block(lang: Option<&str>, text: &str, env: &Env<'_>) -> AnyElement {
         .bg(env.colors.surface_muted)
         .font_family(mono_font())
         .text_size(rpx(m.pre_size))
-        .line_height(rpx(m.pre_size * 1.6))
+        .line_height(rpx(m.pre_size * m.line / m.size))
         .text_color(env.colors.foreground)
         .child(column);
     el.into_any_element()
+}
+
+/// What stands in a list item's marker column.
+enum Marker {
+    /// `list-style: disc`, drawn as the filled circle a browser draws: the bullet
+    /// character of the system font is a speck next to it.
+    Disc,
+    Number(String),
+}
+
+/// The marker column of a list item: the number or bullet, right-aligned against
+/// the text in the list's padding. A number wider than the padding (`10.`) grows
+/// to the left, out of the box, as a browser's outside marker does.
+fn marker_box(marker: Marker, env: &Env<'_>) -> AnyElement {
+    let m = &env.m;
+    let column = div()
+        .flex_none()
+        .w(rpx(m.indent))
+        .pr(rpx(0.6 * m.size))
+        .flex()
+        .flex_row()
+        .justify_end()
+        .whitespace_nowrap();
+    match marker {
+        Marker::Disc => column
+            .h(rpx(m.line))
+            .items_center()
+            .child(
+                div()
+                    .flex_none()
+                    .size(rpx(0.38 * m.size))
+                    .rounded_full()
+                    .bg(env.colors.foreground),
+            )
+            .into_any_element(),
+        Marker::Number(text) => column.child(SharedString::from(text)).into_any_element(),
+    }
 }
 
 fn list_element(
@@ -770,19 +863,18 @@ fn list_element(
     env: &Env<'_>,
     base: Base,
     cx: &mut Context<MarkdownView>,
-) -> AnyElement {
+) -> (Gap, AnyElement) {
     let m = env.m;
-    // A list with any task item drops its bullets and numbers (`contains-task-list`).
+    // A list with any task item drops its bullets and numbers (`contains-task-list`),
+    // for the ordinary items among the tasks too.
     let tasks = list.items.iter().any(|item| item.task.is_some());
     let mut children = Vec::with_capacity(list.items.len());
     for (index, item) in list.items.iter().enumerate() {
-        let content = {
-            let mut column = Vec::with_capacity(item.blocks.len());
-            for block in &item.blocks {
-                column.push(block_child(block, env, base, cx, true));
-            }
-            stack(column)
-        };
+        let mut column = Vec::with_capacity(item.blocks.len());
+        for block in &item.blocks {
+            column.push(block_child(block, env, base, cx, true));
+        }
+        let (inner, content) = stack(column);
         let row = if let Some(checked) = item.task {
             div()
                 .flex()
@@ -791,35 +883,38 @@ fn list_element(
                 .gap(rpx(0.5 * m.size))
                 .child(checkbox(checked, &env.colors))
                 .child(div().flex_1().min_w_0().child(content))
+        } else if tasks {
+            div().min_w_0().child(content)
         } else {
             let marker = if list.ordered {
-                format!("{}.", list.start.saturating_add(index as u64))
+                Marker::Number(format!("{}.", list.start.saturating_add(index as u64)))
             } else {
-                "•".to_string()
+                Marker::Disc
             };
             div()
                 .flex()
                 .flex_row()
                 .items_start()
-                .child(
-                    div()
-                        .flex_none()
-                        .w(rpx(m.indent))
-                        .pr(rpx(0.6 * m.size))
-                        .text_right()
-                        .child(SharedString::from(marker)),
-                )
+                .child(marker_box(marker, env))
                 .child(div().flex_1().min_w_0().child(content))
         };
-        children.push((Gap::both(0.2 * m.size), row.into_any_element()));
+        // `li { margin: 0.2em 0 }`, with the margins of a loose item's paragraphs
+        // collapsing through it.
+        children.push((
+            through(Gap::both(0.2 * m.size), inner),
+            row.into_any_element(),
+        ));
     }
-    let list_el = stack(children);
+    let (edges, list_el) = stack(children);
     let padding = if tasks { 0.15 * m.size } else { 0. };
-    div()
-        .pl(rpx(padding))
-        .min_w_0()
-        .child(list_el)
-        .into_any_element()
+    (
+        edges,
+        div()
+            .pl(rpx(padding))
+            .min_w_0()
+            .child(list_el)
+            .into_any_element(),
+    )
 }
 
 /// A `details` block. Its open state lives in the view, keyed by the node, and the
@@ -873,8 +968,25 @@ fn details_element(
             cx,
         )));
 
+    // `details[open] > summary { margin-bottom: 0.4em }` collapses with the top
+    // margin of the first block under it. The box has padding and a border, so the
+    // margins at its ends stay inside.
+    let mut parts = vec![(
+        Gap {
+            top: 0.,
+            bottom: if open { 0.4 * env.m.size } else { 0. },
+        },
+        head.into_any_element(),
+    )];
+    if open {
+        for block in blocks {
+            parts.push(block_child(block, env, base, cx, false));
+        }
+    }
+    let (edges, inner) = stack(parts);
+
     let (pad_y, pad_x) = env.m.details_pad;
-    let mut el = div()
+    div()
         .px(rpx(pad_x))
         .py(rpx(pad_y))
         .rounded(rpx(10.))
@@ -882,15 +994,8 @@ fn details_element(
         .border_color(colors.border)
         .bg(colors.surface_muted)
         .min_w_0()
-        .child(head);
-    if open {
-        el = el.child(
-            div()
-                .pt(rpx(0.4 * env.m.size))
-                .child(blocks_element(blocks, env, base, cx)),
-        );
-    }
-    el.into_any_element()
+        .child(enclosed(edges, inner))
+        .into_any_element()
 }
 
 fn text_flow(text: &str, style: RunStyle) -> Flow {
@@ -899,21 +1004,92 @@ fn text_flow(text: &str, style: RunStyle) -> Flow {
     flow
 }
 
+/// What a table cell says as plain text, lines apart, for measuring it.
+fn cell_text(blocks: &[Block], out: &mut String) {
+    fn inlines(items: &[Inline], out: &mut String) {
+        for inline in items {
+            match inline {
+                Inline::Text(text) | Inline::Code(text) => out.push_str(text),
+                Inline::Emphasis(children)
+                | Inline::Strong(children)
+                | Inline::Strikethrough(children)
+                | Inline::Underline(children)
+                | Inline::Kbd(children)
+                | Inline::Sub(children)
+                | Inline::Sup(children)
+                | Inline::Link { children, .. } => inlines(children, out),
+                Inline::LineBreak => out.push('\n'),
+                Inline::Image(image) => out.push_str(&image.alt),
+                Inline::Checkbox { .. } => out.push_str("[ ]"),
+                Inline::FootnoteRef { number, .. } => out.push_str(&number.to_string()),
+            }
+        }
+    }
+    for block in blocks {
+        match block {
+            Block::Paragraph(items)
+            | Block::Plain(items)
+            | Block::Heading { inlines: items, .. } => {
+                inlines(items, out);
+                out.push('\n');
+            }
+            Block::CodeBlock { text, .. } => {
+                out.push_str(text);
+                out.push('\n');
+            }
+            Block::BlockQuote(blocks)
+            | Block::Alert { blocks, .. }
+            | Block::Details { blocks, .. }
+            | Block::Div { blocks, .. } => cell_text(blocks, out),
+            Block::List(list) => {
+                for item in &list.items {
+                    out.push_str("   ");
+                    cell_text(&item.blocks, out);
+                }
+            }
+            Block::Table(_) | Block::Rule => {}
+        }
+    }
+}
+
+/// How wide a column wants to be, in characters: the longest line in it (its
+/// max-content), and the longest word (its min-content, which is as narrow as it can
+/// get without breaking a word).
+fn column_chars(rows: &[&TableRow], column: usize) -> (usize, usize) {
+    let (mut line, mut word) = (1, 1);
+    for cell in rows.iter().filter_map(|row| row.cells.get(column)) {
+        let mut text = String::new();
+        cell_text(&cell.blocks, &mut text);
+        for part in text.lines() {
+            line = line.max(part.chars().count());
+        }
+        for part in text.split_whitespace() {
+            word = word.max(part.chars().count());
+        }
+    }
+    (line, word)
+}
+
+/// A table, the way `.md table` draws it.
+///
+/// A browser sizes the columns to their content: as wide as the longest line while
+/// the table fits, narrower (wrapping) when it does not. gpui has no table layout, and
+/// laying the table out by column leaves the cells of one row different heights as
+/// soon as one of them wraps, which breaks the grid. So it is laid out by row, which
+/// keeps every row's cells the same height, and the columns share the width in
+/// proportion to the longest line in each (a stand-in for max-content, counted in
+/// characters). A short table is as wide as its text, and a wide one fills the width
+/// and scrolls only when a word cannot wrap any further.
 fn table_element(
     table: &Table,
     env: &Env<'_>,
     base: Base,
     cx: &mut Context<MarkdownView>,
 ) -> AnyElement {
-    let rows: Vec<(&TableRow, bool)> = table
-        .head
-        .iter()
-        .map(|row| (row, true))
-        .chain(table.rows.iter().map(|row| (row, false)))
-        .collect();
+    let rows: Vec<&TableRow> = table.head.iter().chain(table.rows.iter()).collect();
     let columns = rows
         .iter()
-        .map(|(row, _)| row.cells.len())
+        .map(|row| row.cells.len())
         .max()
         .unwrap_or(0)
         .max(table.alignments.len());
@@ -921,53 +1097,90 @@ fn table_element(
         return div().into_any_element();
     }
 
-    // Laid out by column, so every cell of a column is as wide as its widest one.
-    let mut grid = div().flex().flex_row().items_start();
-    for column in 0..columns {
-        let mut col = div().flex().flex_col().min_w_0();
-        for (row_index, (row, head)) in rows.iter().enumerate() {
+    let (_, pad_x) = env.m.cell_pad;
+    // The advance of a character, in ems: generous, because a column of code or bold
+    // text is wider than the average of the UI font, and a column that comes out too
+    // wide costs a little white space where one too narrow breaks words.
+    const EM_PER_CHAR: f32 = 0.6;
+    let wanted: Vec<(f32, f32)> = (0..columns)
+        .map(|column| {
+            let (line, word) = column_chars(&rows, column);
+            let em = EM_PER_CHAR * env.m.table_size;
+            (line as f32 * em + 2. * pad_x, word as f32 * em + 2. * pad_x)
+        })
+        .collect();
+    let total: f32 = wanted.iter().map(|(line, _)| line).sum::<f32>() + 1.;
+
+    let mut frame = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .border_t_1()
+        .border_l_1()
+        .border_color(env.colors.border);
+    let head_rows = table.head.len();
+    for (row_index, row) in rows.iter().enumerate() {
+        let last_row = row_index + 1 == rows.len();
+        let mut line = div().flex().flex_row().w_full();
+        for (column, &(wants, least)) in wanted.iter().enumerate() {
             let cell = row.cells.get(column);
             let align = cell
                 .and_then(|cell| cell.align)
                 .or_else(|| table.alignments.get(column).copied().flatten());
-            let last_row = row_index + 1 == rows.len();
-            let last_column = column + 1 == columns;
-            col = col.child(cell_element(
-                cell,
-                *head,
+            let head = row_index < head_rows || cell.is_some_and(|cell| cell.header);
+            let look = CellLook {
+                head,
                 align,
-                (last_row, last_column),
-                env,
-                base,
-                cx,
-            ));
+                last_row,
+                last_column: column + 1 == columns,
+                least,
+            };
+            let element = cell_element(cell, look, env, base, cx);
+            // Every row gives a column the same share of the width, in proportion
+            // to what the column wants, and never less than its longest word.
+            let mut slot = div().flex().flex_basis(px(0.)).child(element);
+            slot.style().flex_grow = Some(wants);
+            line = line.child(slot);
         }
-        grid = grid.child(col);
+        frame = frame.child(line);
     }
 
-    let frame = div()
-        .border_t_1()
-        .border_l_1()
-        .border_color(env.colors.border)
-        .child(grid);
     div()
         .id(("md-table", node_key(table)))
         .overflow_x_scroll()
+        .w(rpx(total))
         .max_w(relative(1.))
         .text_size(rpx(env.m.table_size))
+        .line_height(rpx(env.m.table_size * env.m.line / env.m.size))
         .child(frame)
         .into_any_element()
 }
 
-fn cell_element(
-    cell: Option<&TableCell>,
+/// How one table cell is drawn: what the cell is, and where it sits in the grid.
+#[derive(Clone, Copy)]
+struct CellLook {
     head: bool,
     align: Option<Alignment>,
-    (last_row, last_column): (bool, bool),
+    last_row: bool,
+    last_column: bool,
+    /// The narrowest it may get, in CSS pixels.
+    least: f32,
+}
+
+fn cell_element(
+    cell: Option<&TableCell>,
+    look: CellLook,
     env: &Env<'_>,
     base: Base,
     cx: &mut Context<MarkdownView>,
 ) -> AnyElement {
+    let CellLook {
+        head,
+        align,
+        last_row,
+        last_column,
+        least,
+    } = look;
     let (pad_y, pad_x) = env.m.cell_pad;
     let inner = Base {
         weight: if head { 600. } else { base.weight },
@@ -975,10 +1188,11 @@ fn cell_element(
         ..base
     };
     let mut el = div()
+        .size_full()
+        .min_w(rpx(least))
         .px(rpx(pad_x))
         .py(rpx(pad_y))
-        .border_color(env.colors.border)
-        .min_w_0();
+        .border_color(env.colors.border);
     if head {
         el = el.bg(env.colors.muted).font_weight(FontWeight(600.));
     }
@@ -994,44 +1208,48 @@ fn cell_element(
         _ => el,
     };
     match cell {
-        Some(cell) => el.child(blocks_element(&cell.blocks, env, inner, cx)),
+        Some(cell) => {
+            // A cell has padding, so what sticks out of its content stays inside it.
+            let (edges, body) = blocks_stack(&cell.blocks, env, inner, cx);
+            el.child(enclosed(edges, body))
+        }
         None => el,
     }
     .into_any_element()
 }
 
-fn footnotes_element(
+/// The footnotes under the body: a rule, then the numbered notes.
+///
+/// Deviation: remark-rehype's footnote section carries a visually hidden "Footnotes"
+/// heading and a back-reference arrow on every note. Neither does anything here
+/// (the anchors do not resolve, see the sanitiser's id prefix in markdown.ts), so
+/// the rule stands in for the heading and the arrows are left out.
+fn footnotes_children(
     footnotes: &[reviewdeck_core::markdown::Footnote],
     env: &Env<'_>,
     base: Base,
     cx: &mut Context<MarkdownView>,
-) -> AnyElement {
+) -> Vec<(Gap, AnyElement)> {
     let m = env.m;
     let rule = div().w_full().h(px(1.)).bg(env.colors.border);
     let mut children = vec![(Gap::both(m.rule), rule.into_any_element())];
     for footnote in footnotes {
-        let marker = format!("{}.", footnote.number);
+        let (inner, body) = blocks_stack(&footnote.blocks, env, base, cx);
         let row = div()
             .flex()
             .flex_row()
             .items_start()
-            .child(
-                div()
-                    .flex_none()
-                    .w(rpx(m.indent))
-                    .pr(rpx(0.6 * m.size))
-                    .text_right()
-                    .child(SharedString::from(marker)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(blocks_element(&footnote.blocks, env, base, cx)),
-            );
-        children.push((Gap::both(0.2 * m.size), row.into_any_element()));
+            .child(marker_box(
+                Marker::Number(format!("{}.", footnote.number)),
+                env,
+            ))
+            .child(div().flex_1().min_w_0().child(body));
+        children.push((
+            through(Gap::both(0.2 * m.size), inner),
+            row.into_any_element(),
+        ));
     }
-    stack(children)
+    children
 }
 
 /// Gives every block's code its highlight, on the background, so render only looks
@@ -1209,6 +1427,7 @@ impl Render for MarkdownView {
             dark,
             open: &self.open,
             images: self.images.as_ref(),
+            texts: Cell::new(0),
         };
         let base = Base {
             color: colors.foreground,
@@ -1216,8 +1435,18 @@ impl Render for MarkdownView {
             align: None,
         };
 
-        let body = blocks_element(&document.blocks, &env, base, cx);
-        let mut root = div()
+        // Blocks and footnotes are one stack, so the margins between them collapse
+        // like any others and the ends of the whole are flush with the box.
+        let mut children: Vec<(Gap, AnyElement)> = document
+            .blocks
+            .iter()
+            .map(|block| block_child(block, &env, base, cx, false))
+            .collect();
+        if !document.footnotes.is_empty() {
+            children.extend(footnotes_children(&document.footnotes, &env, base, cx));
+        }
+        let (_, body) = stack(children);
+        let root = div()
             .w_full()
             .min_w_0()
             .font_family(UI_FONT)
@@ -1225,9 +1454,315 @@ impl Render for MarkdownView {
             .line_height(rpx(m.line))
             .text_color(colors.foreground)
             .child(body);
-        if !document.footnotes.is_empty() {
-            root = root.child(footnotes_element(&document.footnotes, &env, base, cx));
-        }
         root.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::theme::Theme;
+    use gpui::{
+        Bounds, Entity, ImageFormat, Modifiers, Pixels, TestAppContext, VisualTestContext, point,
+    };
+
+    /// A window holding one markdown view in a column of a known width, so the
+    /// height of that column is the height of the rendered document.
+    struct Host {
+        view: Entity<MarkdownView>,
+        width: f32,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(self.width))
+                .debug_selector(|| "md".to_string())
+                .child(self.view.clone())
+        }
+    }
+
+    fn host<'a>(
+        cx: &'a mut TestAppContext,
+        source: &str,
+        context: MarkdownContext,
+        compact: bool,
+        images: Option<ImageLoader>,
+        width: f32,
+    ) -> (Entity<MarkdownView>, &'a mut VisualTestContext) {
+        cx.update(|cx| cx.set_global(Theme::new(false)));
+        let source = source.to_string();
+        let (host, cx) = cx.add_window_view(|_, cx| {
+            let view = cx.new(|cx| MarkdownView::new(source, context, images, compact, cx));
+            Host { view, width }
+        });
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let view = host.read_with(cx, |host, _| host.view.clone());
+        (view, cx)
+    }
+
+    fn plain<'a>(
+        cx: &'a mut TestAppContext,
+        source: &str,
+        width: f32,
+    ) -> &'a mut VisualTestContext {
+        host(cx, source, MarkdownContext::default(), false, None, width).1
+    }
+
+    fn height(cx: &mut VisualTestContext) -> f32 {
+        let bounds: Bounds<Pixels> = cx.debug_bounds("md").expect("the host is drawn");
+        f32::from(bounds.size.height)
+    }
+
+    fn near(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.6,
+            "height {actual}, expected {expected}"
+        );
+    }
+
+    #[gpui::test]
+    fn paragraphs_are_a_line_each_with_the_paragraph_margin_between(cx: &mut TestAppContext) {
+        let cx = plain(cx, "one\n\ntwo", 400.);
+        // Two lines of 1.6 * 13px, and 0.6em between; none above or below.
+        near(height(cx), 2. * 20.8 + 7.8);
+    }
+
+    #[gpui::test]
+    fn a_loose_list_keeps_the_paragraph_margin_between_items(cx: &mut TestAppContext) {
+        let cx = plain(cx, "- a\n\n- b", 400.);
+        // The margins of the paragraphs collapse through the items (0.2em) and win.
+        near(height(cx), 2. * 20.8 + 7.8);
+    }
+
+    #[gpui::test]
+    fn a_tight_list_has_only_the_item_margin_between_items(cx: &mut TestAppContext) {
+        let cx = plain(cx, "- a\n- b", 400.);
+        near(height(cx), 2. * 20.8 + 2.6);
+    }
+
+    #[gpui::test]
+    fn a_centred_paragraph_keeps_its_margins(cx: &mut TestAppContext) {
+        let cx = plain(cx, "one\n\n<p align=\"center\">two</p>\n\nthree", 400.);
+        near(height(cx), 3. * 20.8 + 2. * 7.8);
+    }
+
+    #[gpui::test]
+    fn the_summary_toggles_its_details(cx: &mut TestAppContext) {
+        let source = "<details><summary>Why</summary>\n\nBecause.\n\n</details>";
+        let cx = plain(cx, source, 400.);
+        let closed = height(cx);
+        // Padding of 0.5em above and below the summary line, and the 1px borders.
+        near(closed, 20.8 + 2. * 6.5 + 2.);
+
+        cx.simulate_click(point(px(30.), px(14.)), Modifiers::none());
+        cx.run_until_parked();
+        let open = height(cx);
+        // 0.6em between the summary (0.4em) and the paragraph (0.6em) collapses to
+        // 0.6em, and the paragraph's own bottom margin stays inside the box.
+        near(open, closed + 7.8 + 20.8 + 7.8);
+
+        cx.simulate_click(point(px(30.), px(14.)), Modifiers::none());
+        cx.run_until_parked();
+        near(height(cx), closed);
+    }
+
+    fn images_context() -> MarkdownContext {
+        MarkdownContext {
+            autolink: None,
+            images: Some(reviewdeck_core::images::ImageContext {
+                repo_root: Some("https://git.example/acme/api".into()),
+                accounts: vec![reviewdeck_core::images::ImageAccount {
+                    id: "acct".into(),
+                    base_url: "https://git.example/api/v4".into(),
+                    web_url: "https://git.example".into(),
+                }],
+            }),
+        }
+    }
+
+    fn svg_loader(width: u32, height: u32) -> ImageLoader {
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"><rect width="{width}" height="{height}" fill="red"/></svg>"#
+        );
+        let picture = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()));
+        Rc::new(move |_, _, _| Some(picture.clone()))
+    }
+
+    #[gpui::test]
+    fn an_image_wider_than_the_column_keeps_its_aspect_ratio(cx: &mut TestAppContext) {
+        let (_, cx) = host(
+            cx,
+            "![shot](https://git.example/uploads/a.png)",
+            images_context(),
+            false,
+            Some(svg_loader(800, 400)),
+            300.,
+        );
+        near(height(cx), 150.);
+    }
+
+    #[gpui::test]
+    fn an_image_narrower_than_the_column_keeps_its_own_size(cx: &mut TestAppContext) {
+        let (_, cx) = host(
+            cx,
+            "![shot](https://git.example/uploads/a.png)",
+            images_context(),
+            false,
+            Some(svg_loader(100, 40)),
+            300.,
+        );
+        near(height(cx), 40.);
+    }
+
+    fn picture_height(
+        cx: &mut TestAppContext,
+        source: &str,
+        compact: bool,
+        picture: (u32, u32),
+        column: f32,
+    ) -> f32 {
+        let (_, cx) = host(
+            cx,
+            source,
+            images_context(),
+            compact,
+            Some(svg_loader(picture.0, picture.1)),
+            column,
+        );
+        height(cx)
+    }
+
+    #[gpui::test]
+    fn an_image_that_is_blocked_or_still_loading_shows_its_alt_text(cx: &mut TestAppContext) {
+        // No repository to resolve a relative source against: blocked.
+        let (_, vcx) = host(cx, "![chart](pic.png)", images_context(), false, None, 300.);
+        near(height(vcx), 20.8);
+
+        // Waiting for the credentialed fetch: the loader has nothing yet.
+        let waiting: ImageLoader = Rc::new(|_, _, _| None);
+        let (_, vcx) = host(
+            cx,
+            "![chart](https://git.example/uploads/a.png)",
+            images_context(),
+            false,
+            Some(waiting),
+            300.,
+        );
+        near(height(vcx), 20.8);
+    }
+
+    #[gpui::test]
+    fn a_web_link_opens_in_the_browser_and_nothing_else_does(cx: &mut TestAppContext) {
+        let source = "[docs](https://example.com/docs) plain text";
+        let (_, vcx) = host(cx, source, MarkdownContext::default(), false, None, 400.);
+        vcx.simulate_click(point(px(10.), px(10.)), Modifiers::none());
+        assert_eq!(
+            vcx.opened_url().as_deref(),
+            Some("https://example.com/docs")
+        );
+    }
+
+    #[gpui::test]
+    fn clicking_the_text_around_a_link_or_a_mailto_link_opens_nothing(cx: &mut TestAppContext) {
+        let source = "[docs](https://example.com/docs) plain text that is long enough to click";
+        let (_, vcx) = host(cx, source, MarkdownContext::default(), false, None, 400.);
+        vcx.simulate_click(point(px(300.), px(10.)), Modifiers::none());
+        assert_eq!(vcx.opened_url(), None);
+
+        let (_, vcx) = host(
+            cx,
+            "[write](mailto:me@example.com) text",
+            MarkdownContext::default(),
+            false,
+            None,
+            400.,
+        );
+        vcx.simulate_click(point(px(10.), px(10.)), Modifiers::none());
+        assert_eq!(vcx.opened_url(), None);
+    }
+
+    #[gpui::test]
+    fn a_blank_line_in_a_code_block_is_a_line_tall(cx: &mut TestAppContext) {
+        let vcx = plain(cx, "```\na\n\nb\n```", 400.);
+        // Three lines of 1.6 * 0.9em, the padding of 0.7em, and the 1px border.
+        near(height(vcx), 3. * 18.72 + 2. * 9.1 + 2.);
+    }
+
+    #[gpui::test]
+    fn a_comment_on_a_line_uses_the_compact_scale(cx: &mut TestAppContext) {
+        let (_, vcx) = host(
+            cx,
+            "one\n\ntwo",
+            MarkdownContext::default(),
+            true,
+            None,
+            400.,
+        );
+        // 12px text at a line height of 1.5, and 0.45em between paragraphs.
+        near(height(vcx), 2. * 18. + 5.4);
+    }
+
+    #[gpui::test]
+    fn the_rows_of_a_table_are_as_tall_as_their_cells(cx: &mut TestAppContext) {
+        let source = "| a | b |\n|---|---|\n| c | d |";
+        let vcx = plain(cx, source, 400.);
+        // 0.94em text at 1.6, 0.35em of padding above and below, 1px borders.
+        let row = 0.94 * 13. * 1.6 + 2. * 0.35 * 13.;
+        near(height(vcx), 1. + (row + 1.) + row);
+    }
+
+    #[gpui::test]
+    fn fenced_code_is_highlighted_for_the_theme_showing(cx: &mut TestAppContext) {
+        let source = "```rust\nfn unique_marker_for_light() {}\n```";
+        let (_, vcx) = host(cx, source, MarkdownContext::default(), false, None, 400.);
+        let kind = CodeKind::Fence("rust".into());
+        let text = "fn unique_marker_for_light() {}";
+        assert!(matches!(code::cached(&kind, text, false), Some(Some(_))));
+        assert!(code::cached(&kind, text, true).is_none());
+
+        // The theme changes: the same block is coloured again for the other one.
+        vcx.update(|window, cx| {
+            cx.set_global(Theme::new(true));
+            window.refresh();
+        });
+        vcx.run_until_parked();
+        assert!(matches!(code::cached(&kind, text, true), Some(Some(_))));
+    }
+
+    #[gpui::test]
+    fn a_fence_no_grammar_knows_stays_plain(cx: &mut TestAppContext) {
+        let source = "```nosuchlanguage\nplain\n```";
+        let (_, _vcx) = host(cx, source, MarkdownContext::default(), false, None, 400.);
+        let kind = CodeKind::Fence("nosuchlanguage".into());
+        assert!(matches!(code::cached(&kind, "plain", false), Some(None)));
+    }
+
+    const SHOT: &str = "![shot](https://git.example/uploads/a.png)";
+
+    #[gpui::test]
+    fn a_width_attribute_sets_the_width_and_the_height_follows(cx: &mut TestAppContext) {
+        let source = r#"<img src="https://git.example/uploads/a.png" width="200">"#;
+        near(picture_height(cx, source, false, (800, 400), 600.), 100.);
+        let source = r#"<img src="https://git.example/uploads/a.png" width="50%">"#;
+        near(picture_height(cx, source, false, (800, 400), 600.), 150.);
+    }
+
+    #[gpui::test]
+    fn a_height_attribute_never_counts(cx: &mut TestAppContext) {
+        // `height: auto` in the stylesheet beats the tag's attribute.
+        let source = r#"<img src="https://git.example/uploads/a.png" height="10">"#;
+        near(picture_height(cx, source, false, (100, 40), 600.), 40.);
+    }
+
+    #[gpui::test]
+    fn a_comment_on_a_line_caps_the_image_at_fourteen_rem_and_ignores_its_width(
+        cx: &mut TestAppContext,
+    ) {
+        near(picture_height(cx, SHOT, true, (800, 400), 1000.), 224.);
+        let source = r#"<img src="https://git.example/uploads/a.png" width="20">"#;
+        near(picture_height(cx, source, true, (100, 40), 1000.), 40.);
     }
 }
