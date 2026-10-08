@@ -1,0 +1,7 @@
+# The compiler CI, releases and local builds all use. Bump it deliberately: a new
+# version invalidates the CI build cache, so the next run on main builds cold.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+targets = ["aarch64-apple-darwin"]
+profile = "minimal"
