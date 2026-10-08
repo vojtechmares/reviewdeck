@@ -13,6 +13,7 @@
 pub mod appearance;
 pub mod instance;
 pub mod login_item;
+pub mod metal_blend;
 pub mod notify;
 pub mod tray;
 pub mod vibrancy;

@@ -4467,6 +4467,7 @@ dependencies = [
  "futures",
  "gpui",
  "objc",
+ "raw-window-handle",
  "reviewdeck-core",
  "serde_json",
 ]

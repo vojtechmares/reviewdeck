@@ -300,6 +300,8 @@ fn main() {
         let settings = vault.settings();
         // Like nativeTheme.themeSource at launch: before the first window draws.
         appearance::set_app_appearance(settings.theme);
+        // Before the first window builds gpui's Metal pipelines.
+        platform::metal_blend::install();
 
         // Installed here: gpui calls this from applicationDidFinishLaunching:, which is
         // early enough for the click that launched the app.
