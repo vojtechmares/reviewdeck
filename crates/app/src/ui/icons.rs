@@ -14,12 +14,12 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, App, AssetSource, Hsla, IntoElement, RenderOnce, Result, SharedString,
-    Styled, Transformation, Window, percentage, svg,
+    Animation, AnimationExt, App, AssetSource, Hsla, InteractiveElement, IntoElement, RenderOnce,
+    Result, SharedString, Styled, Transformation, Window, percentage, prelude::FluentBuilder, svg,
 };
 use reviewdeck_core::model::ProviderKind;
 
-use super::theme::{ActiveTheme, rpx};
+use super::theme::rpx;
 
 /// Expands to the `(path, bytes)` table, so each file is named once.
 macro_rules! embedded {
@@ -213,14 +213,17 @@ pub fn provider_path(kind: ProviderKind) -> &'static str {
 
 /// A 16px lucide icon, or a provider mark, painted in one colour.
 ///
-/// The colour defaults to the theme's foreground. It is set on the SVG itself because
-/// `svg()` only paints with a colour given to it directly.
+/// The colour defaults to the text colour inherited at the point the icon is laid out, the
+/// way `currentColor` works in the SVG it replaces. It is set on the SVG itself because
+/// `svg()` only paints with a colour given to it directly. Hover recolouring works through
+/// [`Icon::hover_group`].
 #[derive(IntoElement)]
 pub struct Icon {
     path: &'static str,
     size: f32,
     color: Option<Hsla>,
     spin: bool,
+    hover: Option<(SharedString, Hsla)>,
 }
 
 impl Icon {
@@ -230,6 +233,7 @@ impl Icon {
             size: 16.,
             color: None,
             spin: false,
+            hover: None,
         }
     }
 
@@ -240,6 +244,7 @@ impl Icon {
             size: 14.,
             color: None,
             spin: false,
+            hover: None,
         }
     }
 
@@ -254,6 +259,13 @@ impl Icon {
         self
     }
 
+    /// Paints the icon in `color` while the mouse is over the element that called
+    /// `.group(group)`. Unlike a hover style on a text parent this does work for icons.
+    pub fn hover_group(mut self, group: impl Into<SharedString>, color: Hsla) -> Icon {
+        self.hover = Some((group.into(), color));
+        self
+    }
+
     /// Turns the icon into a spinner: one full turn every 900ms, the `.spin` class.
     pub fn spin(mut self) -> Icon {
         self.spin = true;
@@ -262,13 +274,16 @@ impl Icon {
 }
 
 impl RenderOnce for Icon {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let color = self.color.unwrap_or(cx.theme().colors.foreground);
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let color = self.color.unwrap_or_else(|| window.text_style().color);
         let icon = svg()
             .path(self.path)
             .size(rpx(self.size))
             .flex_none()
-            .text_color(color);
+            .text_color(color)
+            .when_some(self.hover, |svg, (group, hover)| {
+                svg.group_hover(group, move |style| style.text_color(hover))
+            });
         if self.spin {
             icon.with_animation(
                 "rd-spin",

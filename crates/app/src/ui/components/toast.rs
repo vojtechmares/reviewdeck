@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use gpui::{
     Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Task, Timer, Window, div, prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Styled, Task, Window, deferred, div, prelude::FluentBuilder, px,
 };
 
 use crate::ui::icons::{Icon, IconName};
@@ -82,7 +82,7 @@ impl ToastStack {
             ToastKind::Ok | ToastKind::Info => Duration::from_millis(3500),
         };
         let timer = cx.spawn(async move |this, cx| {
-            Timer::after(ttl).await;
+            cx.background_executor().timer(ttl).await;
             this.update(cx, |stack, cx| stack.dismiss(id, cx)).ok();
         });
         self.toasts.push(Toast {
@@ -142,6 +142,10 @@ impl Render for ToastStack {
             });
             let row = div()
                 .id(SharedString::from(format!("toast-{id}")))
+                .debug_selector(move || format!("toast-{id}"))
+                // `pointer-events-auto` on a `pointer-events-none` stack: the notes catch
+                // the mouse, the gaps between them do not.
+                .occlude()
                 .flex()
                 .items_start()
                 .gap(rpx(10.))
@@ -162,24 +166,33 @@ impl Render for ToastStack {
                         .text_size(rpx(12.5))
                         .line_height(rpx(16.))
                         .font_weight(FontWeight::NORMAL)
+                        // `break-words`: gpui wraps at the box width and breaks a word
+                        // that is wider than it, which is the same thing.
                         .child(toast.message.clone()),
                 )
                 .child(
                     div()
                         .id(SharedString::from(format!("toast-dismiss-{id}")))
+                        .debug_selector(move || format!("toast-dismiss-{id}"))
                         .flex_none()
                         .cursor_pointer()
-                        .text_color(colors.muted_foreground)
-                        .hover(move |s| s.text_color(colors.foreground))
+                        .group(SharedString::from(format!("toast-dismiss-group-{id}")))
                         .on_click(dismiss)
                         .child(
                             Icon::new(IconName::X)
                                 .size(14.)
-                                .color(colors.muted_foreground),
+                                .color(colors.muted_foreground)
+                                // `hover:text-foreground`
+                                .hover_group(
+                                    SharedString::from(format!("toast-dismiss-group-{id}")),
+                                    colors.foreground,
+                                ),
                         ),
                 );
             column = column.child(row);
         }
-        column.when(self.toasts.is_empty(), |d| d.invisible())
+        // `z-100`: above dialogs and popovers, so a toast raised while a dialog is open is
+        // not hidden behind its scrim.
+        deferred(column.when(self.toasts.is_empty(), |d| d.invisible())).with_priority(10)
     }
 }

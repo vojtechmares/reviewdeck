@@ -2,11 +2,23 @@
 //! an optional description, a scrolling body and an optional footer.
 //!
 //! The view owns the open state: render the dialog only while it is open, as the last child
-//! of its `size_full()` root, so the dialog's absolute layer covers the window.
+//! of its `size_full()` root, so the dialog's absolute layer covers the window and paints
+//! over everything before it.
+//!
+//! The dialog is deliberately not a `deferred` element: gpui 0.2.2 cannot draw a deferred
+//! element inside another one ("cannot call defer_draw during deferred drawing"), and a
+//! select or popover opened inside a dialog is one. Painted last in the root instead, the
+//! dialog is on top of the window's content, and popovers opened from inside it defer
+//! normally and land on top of the dialog.
 //!
 //! Behaviour, as in the TSX dialog:
 //! - Escape (`Dismiss` in the `Dialog` key context) and a click on the scrim call `on_close`.
-//!   A click inside the panel does not reach the scrim.
+//!   A click inside the panel does not reach the scrim. Escape pressed inside a text field
+//!   closes the dialog too (the field emits `Cancel` and lets the key travel on, and the
+//!   panel handles the text field's `Escape` action), as the TSX capture-phase listener does.
+//! - When the dialog first appears, focus lands on its first control other than the close
+//!   button, as the TSX `first?.focus()` does. Restoring the previous focus on close is the
+//!   view's job, because a dialog that is simply no longer rendered cannot run code.
 //! - Focus is trapped. The panel takes a [`FocusHandle`] the view keeps: Tab and Shift-Tab
 //!   move through the controls inside it, and when focus would leave, it is pulled back to
 //!   the panel. The view should `window.focus(&handle)` when it opens the dialog, and
@@ -17,8 +29,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, FocusHandle, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, deferred,
-    div, prelude::FluentBuilder, relative,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    prelude::FluentBuilder, relative,
 };
 
 use crate::ui::icons::IconName;
@@ -26,6 +38,7 @@ use crate::ui::theme::{ActiveTheme, radius, rpx};
 
 use super::button::{Button, ButtonSize, ButtonVariant};
 use super::glass::{GlassExt, scrim};
+use super::input;
 use super::{Dismiss, FocusNext, FocusPrev};
 
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -89,9 +102,31 @@ impl ParentElement for Dialog {
 }
 
 impl RenderOnce for Dialog {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors;
         let close = self.on_close.clone();
+
+        // First appearance: move focus to the first control that is not the close button.
+        let opened = window.use_keyed_state(
+            SharedString::from(format!("dialog-opened-{}", self.title)),
+            cx,
+            |_, _| false,
+        );
+        if !*opened.read(cx) {
+            opened.update(cx, |value, _| *value = true);
+            let panel = self.focus.clone();
+            window.defer(cx, move |window, cx| {
+                window.focus(&panel);
+                // The close button is the first stop; step over it. With nothing else in
+                // the dialog the second step would leave the panel, so stay on the button.
+                window.focus_next();
+                window.focus_next();
+                if !panel.contains_focused(window, cx) {
+                    window.focus(&panel);
+                    window.focus_next();
+                }
+            });
+        }
 
         // The header: title and description on the left, the close button on the right.
         let mut heading = div().min_w_0().flex_1().child(
@@ -162,7 +197,10 @@ impl RenderOnce for Dialog {
         let focus_next = self.focus.clone();
         let focus_prev = self.focus.clone();
         let dismiss = close.clone();
+        let dismiss_from_input = close.clone();
         let panel = div()
+            .id("dialog-panel")
+            .debug_selector(|| "dialog-panel".to_string())
             .key_context("Dialog")
             .track_focus(&self.focus)
             .occlude()
@@ -176,6 +214,11 @@ impl RenderOnce for Dialog {
             .glass_overlay(cx)
             .on_action(move |_: &Dismiss, window, cx| {
                 if let Some(handler) = &dismiss {
+                    handler(window, cx);
+                }
+            })
+            .on_action(move |_: &input::Escape, window, cx| {
+                if let Some(handler) = &dismiss_from_input {
                     handler(window, cx);
                 }
             })
@@ -195,7 +238,9 @@ impl RenderOnce for Dialog {
             .child(body)
             .when_some(footer, |d, footer| d.child(footer));
 
-        let backdrop = div()
+        div()
+            .id("dialog-backdrop")
+            .debug_selector(|| "dialog-backdrop".to_string())
             .absolute()
             .top(rpx(0.))
             .left(rpx(0.))
@@ -212,8 +257,6 @@ impl RenderOnce for Dialog {
                 }
             })
             .child(scrim(cx))
-            .child(panel);
-
-        deferred(backdrop).with_priority(3)
+            .child(panel)
     }
 }

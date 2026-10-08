@@ -14,6 +14,7 @@ use gpui::{
 use crate::ui::icons::{Icon, IconName};
 use crate::ui::theme::{ActiveTheme, Colors, radius, rpx};
 
+use super::FocusRing;
 use super::tooltip::tooltip;
 
 /// `variant` on the TSX button.
@@ -228,6 +229,8 @@ pub(crate) fn with_alpha(colour: Hsla, alpha: f32) -> Hsla {
 /// Height, horizontal padding, font size, gap, radius, icon size.
 struct Metrics {
     height: f32,
+    /// A fixed width (`w-8` on the icon size); the others size to their content.
+    width: Option<f32>,
     padding_x: f32,
     font_size: f32,
     gap: f32,
@@ -239,6 +242,7 @@ fn metrics(size: ButtonSize) -> Metrics {
     match size {
         ButtonSize::Sm => Metrics {
             height: 28.,
+            width: None,
             padding_x: 10.,
             font_size: 12.,
             gap: 6.,
@@ -247,6 +251,7 @@ fn metrics(size: ButtonSize) -> Metrics {
         },
         ButtonSize::Md => Metrics {
             height: 34.,
+            width: None,
             padding_x: 14.,
             font_size: 13.,
             gap: 8.,
@@ -255,6 +260,7 @@ fn metrics(size: ButtonSize) -> Metrics {
         },
         ButtonSize::Lg => Metrics {
             height: 40.,
+            width: None,
             padding_x: 20.,
             font_size: 14.,
             gap: 8.,
@@ -263,6 +269,7 @@ fn metrics(size: ButtonSize) -> Metrics {
         },
         ButtonSize::Icon => Metrics {
             height: 32.,
+            width: Some(32.),
             padding_x: 0.,
             font_size: 13.,
             gap: 0.,
@@ -273,12 +280,25 @@ fn metrics(size: ButtonSize) -> Metrics {
 }
 
 impl RenderOnce for Button {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors;
         let paint = variant_colors(self.variant, &colors);
         let sizing = metrics(self.size);
-        let icon_colour = paint.foreground;
         let inert = self.disabled || self.loading;
+
+        // `hover:text-foreground`. gpui cannot recolour already-shaped text from a hover
+        // style (see the module docs of `ui::components`), so a variant whose text changes
+        // colour on hover keeps a hover flag and re-renders with the colour it should have.
+        let text_changes = paint.hover_foreground != paint.foreground;
+        let hover_state = (text_changes && !inert)
+            .then(|| window.use_keyed_state((self.id.clone(), "hover"), cx, |_, _| false));
+        let hovered = hover_state.as_ref().is_some_and(|state| *state.read(cx));
+        let text_colour = if hovered {
+            paint.hover_foreground
+        } else {
+            paint.foreground
+        };
+        let icon_colour = text_colour;
         let icon_size = sizing.icon;
 
         let leading: Option<AnyElement> = if self.loading {
@@ -301,8 +321,10 @@ impl RenderOnce for Button {
         let hover_background = paint.hover_background;
         let hover_foreground = paint.hover_foreground;
 
+        let selector = format!("button-{}", self.id);
         let mut element = div()
             .id(self.id)
+            .debug_selector(move || selector)
             .flex()
             .flex_none()
             .items_center()
@@ -311,13 +333,14 @@ impl RenderOnce for Button {
             .font_weight(FontWeight::MEDIUM)
             .h(rpx(sizing.height))
             .px(rpx(sizing.padding_x))
+            .when_some(sizing.width, |d, width| d.w(rpx(width)))
             .gap(rpx(sizing.gap))
             .rounded(rpx(sizing.radius))
             .text_size(rpx(sizing.font_size))
             .border_1()
             .border_color(paint.border)
             .bg(paint.background)
-            .text_color(paint.foreground)
+            .text_color(text_colour)
             .when(paint.shadow, |d| {
                 d.shadow(vec![gpui::BoxShadow {
                     color: colors.overlay_shadow,
@@ -330,6 +353,17 @@ impl RenderOnce for Button {
             .when(!inert, |d| {
                 d.cursor_pointer()
                     .hover(move |s| s.bg(hover_background).text_color(hover_foreground))
+                    .focus_ring(cx)
+            })
+            .when_some(hover_state, |d, state| {
+                d.on_hover(move |hovered, _, cx| {
+                    state.update(cx, |value, cx| {
+                        if *value != *hovered {
+                            *value = *hovered;
+                            cx.notify();
+                        }
+                    })
+                })
             })
             .when_some(leading, |d, icon| d.child(icon))
             .children(self.children);

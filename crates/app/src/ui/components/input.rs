@@ -18,6 +18,20 @@
 //! Port of src/renderer/src/components/ui/input.tsx (`Input`, `Textarea`, `Label`). The
 //! single-line field is `multi_line` off; the textarea is `multi_line(min, max)`. The look
 //! comes from [`field_style`], which is re-read every frame, so the theme is always current.
+//!
+//! The field draws its own type (`text-[13px] text-foreground`, a 36px `h-9` box for the
+//! single-line field, `leading-relaxed` rows for the textarea), so it looks the same wherever
+//! it is placed. Views adjust it through the builders (or their `set_*` twins) rather than by
+//! styling the element: [`TextInput::height`] (`h-8`), [`TextInput::padding_left`] (`pl-7.5`,
+//! the inset that makes room for an icon), [`TextInput::set_rows`] and
+//! [`TextInput::masked`].
+//!
+//! Masked mode is for secrets (access tokens): the text is drawn as bullets, copy and cut are
+//! disabled so the secret cannot reach the clipboard, word-wise movement and double-click
+//! treat the whole value as one word (a word boundary would leak its shape), the IME is
+//! switched off (composition is committed immediately, never shown) and the text is not
+//! offered to the platform's `text_for_range` queries. Masked applies to the single-line
+//! field only.
 
 use std::ops::Range;
 
@@ -31,10 +45,12 @@ use gpui::{
     EventEmitter, FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId,
     InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Rems, Render,
-    ScrollWheelEvent, SharedString, Style, Styled, TextAlign, TextRun, UTF16Selection,
+    ScrollWheelEvent, SharedString, Style, Styled, Task, TextAlign, TextRun, UTF16Selection,
     UnderlineStyle, Window, WrappedLine, actions, div, fill, hsla, point, prelude::FluentBuilder,
     px, relative, rems, size,
 };
+
+use crate::ui::theme::rpx;
 
 actions!(
     text_input,
@@ -273,6 +289,15 @@ pub struct TextInput {
     mode: InputMode,
     disabled: bool,
     pub style: TextInputStyle,
+    /// `h-8` and friends: an explicit height in CSS pixels for the single-line field.
+    height: Option<f32>,
+    /// `pl-7.5` and friends: horizontal padding overrides in CSS pixels.
+    padding_left: Option<f32>,
+    padding_right: Option<f32>,
+    masked: bool,
+    /// The caret is drawn while this is true; a task flips it while the field is focused.
+    blink_on: bool,
+    blink_task: Option<Task<()>>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -311,6 +336,12 @@ impl TextInput {
             mode: InputMode::SingleLine,
             disabled: false,
             style: TextInputStyle::default(),
+            height: None,
+            padding_left: None,
+            padding_right: None,
+            masked: false,
+            blink_on: true,
+            blink_task: None,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -337,6 +368,63 @@ impl TextInput {
     pub fn placeholder(mut self, text: impl Into<SharedString>) -> Self {
         self.placeholder = text.into();
         self
+    }
+
+    /// An explicit height in CSS pixels for the single-line field (`h-8` is 32; the default
+    /// is `h-9`, 36). The textarea grows with its rows instead and ignores this.
+    pub fn height(mut self, css_px: f32) -> Self {
+        self.height = Some(css_px);
+        self
+    }
+
+    /// Replaces the left padding (`px-3`, 12) in CSS pixels, e.g. 30 for `pl-7.5` when an icon
+    /// sits inside the field's left edge.
+    pub fn padding_left(mut self, css_px: f32) -> Self {
+        self.padding_left = Some(css_px);
+        self
+    }
+
+    /// Replaces the right padding (`px-3`, 12) in CSS pixels.
+    pub fn padding_right(mut self, css_px: f32) -> Self {
+        self.padding_right = Some(css_px);
+        self
+    }
+
+    /// Secret mode, see the module docs. Ignored by the multi-line field.
+    pub fn masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
+        self
+    }
+
+    pub fn is_masked(&self) -> bool {
+        self.masked && !self.is_multi()
+    }
+
+    pub fn set_masked(&mut self, masked: bool, cx: &mut Context<Self>) {
+        self.masked = masked;
+        self.marked_range = None;
+        cx.notify();
+    }
+
+    /// Changes the textarea's row range after construction (`rows` on the TSX element). A
+    /// single-line field becomes a textarea.
+    pub fn set_rows(&mut self, min_rows: usize, max_rows: usize, cx: &mut Context<Self>) {
+        let min_rows = min_rows.max(1);
+        self.mode = InputMode::MultiLine {
+            min_rows,
+            max_rows: max_rows.max(min_rows),
+        };
+        cx.notify();
+    }
+
+    pub fn set_height(&mut self, css_px: Option<f32>, cx: &mut Context<Self>) {
+        self.height = css_px;
+        cx.notify();
+    }
+
+    pub fn set_padding_left(&mut self, css_px: Option<f32>, cx: &mut Context<Self>) {
+        self.padding_left = css_px;
+        cx.notify();
     }
 
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
@@ -449,7 +537,8 @@ impl TextInput {
         } else {
             prev_boundary(&self.content, row.end).max(row.start)
         };
-        self.clamp_offset(ix.clamp(row.start, max))
+        // The layout speaks in displayed-text offsets.
+        self.clamp_offset(self.display_to_content(ix.clamp(row.start, max)))
     }
 
     /// Window-coordinate top-left of the caret position for `offset` (None before first paint).
@@ -458,7 +547,11 @@ impl TextInput {
         if layout.rows.is_empty() {
             return None;
         }
-        let offset = if layout.is_placeholder { 0 } else { offset };
+        let offset = if layout.is_placeholder {
+            0
+        } else {
+            self.content_to_display(offset)
+        };
         let row_ix = layout.row_for_offset(offset);
         let row = &layout.rows[row_ix];
         let x = layout.x_for(row, offset.clamp(row.start, row.end));
@@ -772,7 +865,43 @@ fn line_range_at(text: &str, offset: usize) -> Range<usize> {
     start..end
 }
 
+/// What a masked field draws for each character.
+const MASK: char = '\u{2022}';
+
 impl TextInput {
+    /// The text as drawn: the content, or one bullet per character when masked.
+    fn display_text(&self) -> String {
+        if self.is_masked() {
+            std::iter::repeat_n(MASK, self.content.chars().count()).collect()
+        } else {
+            self.content.clone()
+        }
+    }
+
+    /// Content byte offset to the offset in [`display_text`](Self::display_text). The layout
+    /// is built from the displayed text, so every offset that meets it goes through here.
+    fn content_to_display(&self, offset: usize) -> usize {
+        if self.is_masked() {
+            let offset = self.clamp_offset(offset);
+            self.content[..offset].chars().count() * MASK.len_utf8()
+        } else {
+            offset
+        }
+    }
+
+    /// The inverse of [`to_display`](Self::to_display), rounding down to a character.
+    fn display_to_content(&self, offset: usize) -> usize {
+        if self.is_masked() {
+            let chars = offset / MASK.len_utf8();
+            self.content
+                .char_indices()
+                .nth(chars)
+                .map_or(self.content.len(), |(ix, _)| ix)
+        } else {
+            offset
+        }
+    }
+
     fn is_multi(&self) -> bool {
         matches!(self.mode, InputMode::MultiLine { .. })
     }
@@ -822,6 +951,7 @@ impl TextInput {
         self.goal_x = None;
         self.last_edit = None;
         self.autoscroll = true;
+        self.blink_on = true;
         cx.notify();
     }
 
@@ -893,6 +1023,7 @@ impl TextInput {
         self.marked_range = None;
         self.goal_x = None;
         self.autoscroll = true;
+        self.blink_on = true;
         cx.emit(TextInputEvent::Changed);
         cx.notify();
     }
@@ -910,15 +1041,15 @@ impl TextInput {
     /// Start / end of the visual row containing `offset` (logical line without a layout).
     fn row_bounds(&self, offset: usize) -> (usize, usize) {
         if let Some(layout) = self.layout.as_ref().filter(|l| !l.is_placeholder) {
-            let row = layout.rows[layout.row_for_offset(offset)];
+            let row = layout.rows[layout.row_for_offset(self.content_to_display(offset))];
             let end = if row.last_in_line {
                 row.end
             } else {
                 prev_boundary(&self.content, row.end).max(row.start)
             };
             (
-                row.start.min(self.content.len()),
-                end.min(self.content.len()),
+                self.display_to_content(row.start).min(self.content.len()),
+                self.display_to_content(end).min(self.content.len()),
             )
         } else {
             let r = line_range_at(&self.content, offset);
@@ -982,11 +1113,11 @@ impl TextInput {
         self.delete_selection_or(t, cx);
     }
     fn delete_word_left(&mut self, _: &DeleteWordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        let t = prev_word_boundary(&self.content, self.cursor_offset());
+        let t = self.word_before();
         self.delete_selection_or(t, cx);
     }
     fn delete_word_right(&mut self, _: &DeleteWordRight, _: &mut Window, cx: &mut Context<Self>) {
-        let t = next_word_boundary(&self.content, self.cursor_offset());
+        let t = self.word_after();
         self.delete_selection_or(t, cx);
     }
     fn delete_to_line_start(
@@ -1047,17 +1178,33 @@ impl TextInput {
     fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
         self.vertical(1, true, cx);
     }
+    /// Word boundary to the left of the caret; the start of the value when masked.
+    fn word_before(&self) -> usize {
+        if self.is_masked() {
+            0
+        } else {
+            prev_word_boundary(&self.content, self.cursor_offset())
+        }
+    }
+    /// Word boundary to the right of the caret; the end of the value when masked.
+    fn word_after(&self) -> usize {
+        if self.is_masked() {
+            self.content.len()
+        } else {
+            next_word_boundary(&self.content, self.cursor_offset())
+        }
+    }
     fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(prev_word_boundary(&self.content, self.cursor_offset()), cx);
+        self.move_to(self.word_before(), cx);
     }
     fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(next_word_boundary(&self.content, self.cursor_offset()), cx);
+        self.move_to(self.word_after(), cx);
     }
     fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(prev_word_boundary(&self.content, self.cursor_offset()), cx);
+        self.select_to(self.word_before(), cx);
     }
     fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(next_word_boundary(&self.content, self.cursor_offset()), cx);
+        self.select_to(self.word_after(), cx);
     }
     fn line_start(&mut self, _: &LineStart, _: &mut Window, cx: &mut Context<Self>) {
         let (s, _) = self.row_bounds(self.cursor_offset());
@@ -1091,14 +1238,14 @@ impl TextInput {
         self.select_all(cx);
     }
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.is_masked() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
         }
     }
     fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.is_masked() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -1150,6 +1297,9 @@ impl TextInput {
     }
     fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(TextInputEvent::Cancel);
+        // Let the action reach the ancestors: a dialog closes on it, as the TSX dialog's
+        // capture-phase Escape listener does even with a field focused.
+        cx.propagate();
     }
     fn show_character_palette(
         &mut self,
@@ -1182,7 +1332,11 @@ impl TextInput {
                 }
             }
             2 => {
-                let r = word_range_at(&self.content, ix);
+                let r = if self.is_masked() {
+                    0..self.content.len()
+                } else {
+                    word_range_at(&self.content, ix)
+                };
                 self.move_to(r.start, cx);
                 self.select_to(r.end, cx);
             }
@@ -1271,6 +1425,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
+        if self.is_masked() {
+            return None;
+        }
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
         Some(self.content[range].to_string())
@@ -1346,6 +1503,11 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        if self.is_masked() {
+            // No composition in a secret field: commit what the IME offers straight away.
+            self.replace_range(range, new_text, EditKind::Insert, cx);
+            return;
+        }
         let range = self.clamp_offset(range.start)..self.clamp_offset(range.end);
         let new_text = self.sanitize(new_text.to_string());
         self.push_undo(EditKind::Insert);
@@ -1420,21 +1582,22 @@ impl EntityInputHandler for TextInput {
 ///
 /// The TSX field is `h-9 rounded-lg border-border bg-surface-strong px-3 text-[13px]`, with
 /// the placeholder at `muted-foreground/70`, a `border-strong` edge on focus and a 2px ring.
-/// The focus ring is a 3px spread shadow here, so its colour is the ring at a lower alpha.
+/// The focus ring (`outline: 2px solid var(--ring)`, offset 2px) is a 2px spread shadow here:
+/// gpui has no outline offset, so the ring hugs the border instead of floating 2px off it.
 pub fn field_style(cx: &App) -> TextInputStyle {
     let colors = cx.theme().colors;
     TextInputStyle {
         background: colors.surface_strong,
         border: colors.border,
         border_focused: colors.border_strong,
-        ring: with_alpha(colors.ring, 0.35),
+        ring: colors.ring,
         placeholder: with_alpha(colors.muted_foreground, 0.7),
         selection: colors.ring,
         selection_unfocused: with_alpha(colors.muted_foreground, 0.2),
         cursor: colors.foreground,
-        // `px-3` and `py-2`, with the 1px border taken off the 36px `h-9` height.
+        // `px-3` and `py-2`.
         padding_x: rems(0.75),
-        padding_y: rems(0.4375),
+        padding_y: rems(0.5),
         radius: rems(0.875),
         disabled_opacity: 0.5,
     }
@@ -1453,17 +1616,56 @@ pub fn label(text: impl Into<gpui::SharedString>, cx: &App) -> gpui::Div {
 // Render + the text element
 // ---------------------------------------------------------------------------------------------
 
+/// The caret blinks like the platform's: on for half a second, off for half a second, and
+/// solid again right after any edit or movement.
+const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
+
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Re-read the theme every frame, so a light/dark switch reaches the field.
         self.style = field_style(cx);
         let focused = self.focus_handle.is_focused(window);
+
+        // The blink runs only while the field has focus, so an idle window repaints nothing.
+        if focused && !self.disabled {
+            if self.blink_task.is_none() {
+                self.blink_on = true;
+                self.blink_task = Some(cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(BLINK).await;
+                        let alive = this.update(cx, |input, cx| {
+                            input.blink_on = !input.blink_on;
+                            cx.notify();
+                        });
+                        if alive.is_err() {
+                            break;
+                        }
+                    }
+                }));
+            }
+        } else if self.blink_task.take().is_some() {
+            self.blink_on = true;
+        }
+
         let style = &self.style;
-        div()
+        let multi = self.is_multi();
+        let field = div()
+            .debug_selector(|| "text-input".to_string())
             .key_context(KEY_CONTEXT)
             .w_full()
-            .px(style.padding_x)
-            .py(style.padding_y)
+            .flex()
+            .flex_col()
+            .justify_center()
+            // `text-[13px] text-foreground`; the textarea is `leading-relaxed` (1.625).
+            .text_size(rpx(13.))
+            .line_height(rpx(if multi { 21.125 } else { 20. }))
+            .text_color(cx.theme().colors.foreground)
+            .pl(self.padding_left.map_or(style.padding_x, rpx))
+            .pr(self.padding_right.map_or(style.padding_x, rpx))
+            // The single-line field is a fixed `h-9` box with its text centred; the
+            // textarea is as tall as its rows plus `py-2`.
+            .when(!multi, |d| d.h(rpx(self.height.unwrap_or(36.))))
+            .when(multi, |d| d.py(style.padding_y))
             .rounded(style.radius)
             .border_1()
             .border_color(if focused {
@@ -1477,9 +1679,10 @@ impl Render for TextInput {
                     color: style.ring,
                     offset: point(px(0.), px(0.)),
                     blur_radius: px(0.),
-                    spread_radius: px(3.),
+                    spread_radius: px(2.),
                 }])
-            })
+            });
+        field
             .when(self.disabled, |d| {
                 d.opacity(style.disabled_opacity).cursor(CursorStyle::Arrow)
             })
@@ -1554,7 +1757,7 @@ fn display_runs(input: &TextInput, window: &Window) -> (SharedString, Vec<TextRu
     let (text, color): (SharedString, Hsla) = if is_placeholder {
         (input.placeholder.clone(), input.style.placeholder)
     } else {
-        (input.content.clone().into(), style.color)
+        (input.display_text().into(), style.color)
     };
     let base = TextRun {
         len: text.len(),
@@ -1564,7 +1767,12 @@ fn display_runs(input: &TextInput, window: &Window) -> (SharedString, Vec<TextRu
         underline: None,
         strikethrough: None,
     };
-    let runs = match input.marked_range.as_ref().filter(|_| !is_placeholder) {
+    let marked = input
+        .marked_range
+        .as_ref()
+        .filter(|_| !is_placeholder)
+        .map(|m| input.content_to_display(m.start)..input.content_to_display(m.end));
+    let runs = match marked.as_ref() {
         Some(m) => [
             TextRun {
                 len: m.start,
@@ -1736,7 +1944,7 @@ impl Element for TextElement {
         let head = if is_placeholder {
             0
         } else {
-            input.cursor_offset()
+            input.content_to_display(input.cursor_offset())
         };
         let head_row = layout.row_for_offset(head);
         let head_x = layout
@@ -1765,7 +1973,8 @@ impl Element for TextElement {
         let origin = bounds.origin - scroll;
         let focused = input.focus_handle.is_focused(window);
         let mut selection = Vec::new();
-        let sel = input.selected_range.clone();
+        let sel = input.content_to_display(input.selected_range.start)
+            ..input.content_to_display(input.selected_range.end);
         if !sel.is_empty() && !is_placeholder {
             let newline_w = font_size * 0.4;
             let color = if focused {
@@ -1796,9 +2005,9 @@ impl Element for TextElement {
                 ));
             }
         }
-        let cursor = (focused && sel.is_empty() && !input.disabled).then(|| {
+        let cursor = (focused && sel.is_empty() && !input.disabled && input.blink_on).then(|| {
             fill(
-                Bounds::new(origin + point(head_x, head_y), size(cursor_w, line_height)),
+                Bounds::new(origin + point(head_x, head_y), size(px(1.), line_height)),
                 input.style.cursor,
             )
         });
@@ -1887,3 +2096,7 @@ impl Element for TextElement {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "input_tests.rs"]
+mod interaction;
