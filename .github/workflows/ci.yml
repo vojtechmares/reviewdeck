@@ -1,10 +1,11 @@
 name: CI
 
 on:
+  # main, and pull requests into it: a branch is checked through its pull
+  # request, so one push does not run the macOS job twice. Not on tags either:
+  # the release workflow runs the same tests and the same build.
   push:
-    branches: ["**"]
-  # Not on tags: the release workflow runs the same tests and the same build,
-  # and a macOS runner doing it twice for one push is money for nothing.
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -15,6 +16,8 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The build cache's key hashes every CARGO* and RUST* variable, so these must
+# match release.yml's for a tag to find main's cache.
 env:
   CARGO_TERM_COLOR: always
   # Incremental artifacts only help a rebuild on the same machine; on a runner
@@ -31,12 +34,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The version, components and target come from rust-toolchain.toml, which
+      # rustup reads from 1.28 on. Every other toolchain is removed: the build
+      # cache's key covers all installed toolchains, so the image's own stable
+      # would otherwise turn the cache cold whenever GitHub updates the image.
       - name: Install the Rust toolchain
-        id: toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-          targets: aarch64-apple-darwin
+        run: |
+          set -euo pipefail
+          rustup --version
+          rustup toolchain install
+          ACTIVE="$(rustup show active-toolchain | cut -d' ' -f1)"
+          for TOOLCHAIN in $(rustup toolchain list --quiet); do
+            if [[ "$TOOLCHAIN" != "$ACTIVE" ]]; then
+              rustup toolchain uninstall "$TOOLCHAIN"
+            fi
+          done
+          rustup toolchain list
+          rustc --version
 
       # gpui compiles its Metal shaders at build time, and from Xcode 26 on the
       # Metal compiler is a separate download. It is not cached: it is a
@@ -52,19 +66,20 @@ jobs:
           fi
           xcrun metal --version
 
-      # gpui and its dependencies are most of the build. The key changes with
-      # the lockfile and the compiler, either of which invalidates the target
-      # directory anyway.
-      - name: Cache the cargo registry and build
-        uses: actions/cache@v6
+      # gpui and its dependencies are most of the build. The cache holds only
+      # them (not the workspace's own crates, which change with every commit),
+      # pruned of anything the build no longer uses before it is saved, and is
+      # keyed on the compiler, the manifests and the lockfile.
+      #
+      # Only main saves it. Pull requests and release tags restore main's cache
+      # and never write their own, so there is one bounded entry rather than a
+      # copy per branch evicting each other from the 10 GB repository limit.
+      - name: Cache the cargo registry and dependency builds
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
+          # Shared with release.yml; without it the key includes the job id.
+          shared-key: macos-arm64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all --check

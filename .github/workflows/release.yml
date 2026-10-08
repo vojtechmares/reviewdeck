@@ -10,6 +10,7 @@ permissions:
   contents: read
 
 env:
+  # Same CARGO* values as ci.yml: the build cache's key hashes them.
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RELEASE_BRANCH: main
@@ -63,11 +64,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      # From rust-toolchain.toml, and the only toolchain left installed, as in
+      # ci.yml: the build cache's key covers every installed toolchain.
       - name: Install the Rust toolchain
-        id: toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
+        run: |
+          set -euo pipefail
+          rustup --version
+          rustup toolchain install
+          ACTIVE="$(rustup show active-toolchain | cut -d' ' -f1)"
+          for TOOLCHAIN in $(rustup toolchain list --quiet); do
+            if [[ "$TOOLCHAIN" != "$ACTIVE" ]]; then
+              rustup toolchain uninstall "$TOOLCHAIN"
+            fi
+          done
+          rustup toolchain list
+          rustc --version
 
       # gpui compiles its Metal shaders at build time, and from Xcode 26 on the
       # Metal compiler is a separate download - see ci.yml.
@@ -81,17 +92,14 @@ jobs:
           fi
           xcrun metal --version
 
-      # Same key as CI, so a tag restores what the push to main already built.
-      - name: Cache the cargo registry and build
-        uses: actions/cache@v6
+      # Restores the cache CI saved on main (see ci.yml) and never writes one.
+      # It has to run before the version is stamped: the key hashes Cargo.toml,
+      # and a stamped one would never match main's.
+      - name: Cache the cargo registry and dependency builds
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
+          shared-key: macos-arm64
+          save-if: false
 
       - name: Resolve the version
         id: version
