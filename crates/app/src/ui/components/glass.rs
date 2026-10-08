@@ -50,27 +50,28 @@ pub trait GlassExt: Styled + ParentElement + Sized {
 
     /// `.glass-overlay`: the near-opaque film dialogs, popovers, tooltips and toasts use,
     /// with the overlay border and its two drop shadows.
+    ///
+    /// The shadows are gpui's own, which follow the rounded corners and blur properly. gpui
+    /// paints them under the whole box rather than only outside it as CSS does, but this
+    /// film is opaque enough (at least 98.5%) that what shows through is invisible.
     fn glass_overlay(mut self, cx: &gpui::App) -> Self {
         let colors = cx.theme().colors;
         let corner = current_radius(&mut self);
         self.child(top_highlight_with(cx, corner))
-            .child(outer_shadow(
-                vec![
-                    BoxShadow {
-                        color: colors.overlay_shadow,
-                        offset: point(px(0.), px(4.)),
-                        blur_radius: px(12.),
-                        spread_radius: px(-6.),
-                    },
-                    BoxShadow {
-                        color: colors.overlay_shadow,
-                        offset: point(px(0.), px(24.)),
-                        blur_radius: px(60.),
-                        spread_radius: px(-18.),
-                    },
-                ],
-                corner,
-            ))
+            .shadow(vec![
+                BoxShadow {
+                    color: colors.overlay_shadow,
+                    offset: point(px(0.), px(4.)),
+                    blur_radius: px(12.),
+                    spread_radius: px(-6.),
+                },
+                BoxShadow {
+                    color: colors.overlay_shadow,
+                    offset: point(px(0.), px(24.)),
+                    blur_radius: px(60.),
+                    spread_radius: px(-18.),
+                },
+            ])
             // The CSS film is 0.95 over a 44px blur. Without the blur the app's own text
             // shows through the 5% as a ghost, so the film is a little thicker here.
             .bg(Hsla {
@@ -100,11 +101,15 @@ impl<T: Styled + ParentElement + Sized> GlassExt for T {}
 /// either: a content mask only works if it overlaps the shadow's *unblurred* rectangle, and
 /// with the negative spreads used here that rectangle lies wholly inside the box.
 ///
-/// So the blur is drawn by hand: bands of 2px quads on the four sides of the box, each with
-/// the alpha a gaussian-blurred rectangle has at that distance (the same maths the shader
-/// uses). Nothing lands inside the box. Corners are squared off, and the shadow's ends are
-/// not blurred along the edge, which at these spreads is not visible. It fills the parent,
-/// like [`top_highlight`].
+/// So the blur is drawn by hand, as a gaussian-blurred rectangle is: its alpha at any point
+/// is the blurred coverage along x times the blurred coverage along y (the blur is
+/// separable), which gets the corners and the fading ends right, not just the four edges.
+/// The area around the box is tiled with small cells of that alpha, and nothing lands
+/// inside the box. The one approximation is the box's own rounded corners, where the
+/// shadow is a hair weaker than the browser's. It fills the parent, like [`top_highlight`].
+///
+/// Use it only for translucent fills: an opaque surface hides what gpui paints under it, so
+/// its own `shadow` is cheaper and exact (see [`GlassExt::glass_overlay`]).
 pub fn outer_shadow(shadows: Vec<BoxShadow>, _corner: AbsoluteLength) -> impl IntoElement {
     canvas(
         |_, _, _| (),
@@ -137,79 +142,76 @@ fn erfc(x: f32) -> f32 {
     if x >= 0. { r } else { 2. - r }
 }
 
+/// How much of `[lo, hi]` a gaussian of `sigma` centred on `x` covers: a blurred
+/// rectangle's alpha along one axis, 1 well inside, 0.5 on an edge, 0 far outside.
+fn coverage(x: f32, lo: f32, hi: f32, sigma: f32) -> f32 {
+    let k = sigma * std::f32::consts::SQRT_2;
+    (0.5 * (erfc((lo - x) / k) - erfc((hi - x) / k))).clamp(0., 1.)
+}
+
+/// Alpha below which a cell is not worth painting.
+const INVISIBLE: f32 = 0.002;
+
 fn paint_outer_shadow(window: &mut gpui::Window, bounds: Bounds<gpui::Pixels>, shadow: &BoxShadow) {
     let value = |v: gpui::Pixels| f32::from(v);
     // The shadow's own rectangle, in window pixels.
     let rect = (bounds + shadow.offset).dilate(shadow.spread_radius);
     let (left, top) = (value(rect.left()), value(rect.top()));
     let (right, bottom) = (value(rect.right()), value(rect.bottom()));
+    if right <= left || bottom <= top {
+        return;
+    }
+    // CSS blur radius is twice the gaussian's standard deviation.
     let sigma = (value(shadow.blur_radius) / 2.).max(0.5);
-    // How far past the box the shadow can still be seen.
-    let reach = sigma * 2.6;
-    let step = 2.;
-    // Alpha of an edge blurred over `sigma`, `outside` pixels beyond it.
-    let falloff = |outside: f32| 0.5 * erfc(outside / (sigma * std::f32::consts::SQRT_2));
-    // The shadow fades out along an edge over about a sigma, so the bands run a little
-    // further than the rectangle itself.
-    let slack = sigma * 0.5;
-    let box_left = value(bounds.left());
-    let box_right = value(bounds.right());
-    let box_top = value(bounds.top());
-    let box_bottom = value(bounds.bottom());
+    // Beyond three sigmas the shadow is gone.
+    let reach = sigma * 3.;
+    let (reach_left, reach_top) = (left - reach, top - reach);
+    let (reach_right, reach_bottom) = (right + reach, bottom + reach);
+    let (box_left, box_top) = (value(bounds.left()), value(bounds.top()));
+    let (box_right, box_bottom) = (value(bounds.right()), value(bounds.bottom()));
+    // Small enough that the steepest part of the falloff changes by a few percent per
+    // cell, large enough to keep a card's shadow to a couple of thousand quads.
+    let step = (sigma / 4.).clamp(1., 4.);
     let colour = shadow.color;
 
-    let mut paint = |x: f32, y: f32, w: f32, h: f32, alpha: f32| {
-        if alpha > 0.002 && w > 0. && h > 0. {
-            window.paint_quad(gpui::fill(
-                Bounds::new(point(px(x), px(y)), size(px(w), px(h))),
-                Hsla {
-                    a: colour.a * alpha,
-                    ..colour
-                },
-            ));
+    // Tiles one rectangle of the area around the box.
+    let mut tile = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        let mut y = y0;
+        while y < y1 {
+            let h = step.min(y1 - y);
+            let along_y = coverage(y + h / 2., top, bottom, sigma) * colour.a;
+            if along_y > INVISIBLE {
+                let mut x = x0;
+                while x < x1 {
+                    let w = step.min(x1 - x);
+                    let alpha = along_y * coverage(x + w / 2., left, right, sigma);
+                    if alpha > INVISIBLE {
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(point(px(x), px(y)), size(px(w), px(h))),
+                            Hsla { a: alpha, ..colour },
+                        ));
+                    }
+                    x += w;
+                }
+            }
+            y += h;
         }
     };
 
-    let mut d = 0.;
-    while d < reach {
-        let mid = d + step / 2.;
-        // Below.
-        let a = falloff(box_bottom + mid - bottom);
-        paint(
-            left - slack,
-            box_bottom + d,
-            right - left + 2. * slack,
-            step,
-            a,
-        );
-        // Above.
-        let a = falloff(top - (box_top - mid));
-        paint(
-            left - slack,
-            box_top - d - step,
-            right - left + 2. * slack,
-            step,
-            a,
-        );
-        // Left and right, along the box's own height.
-        let a = falloff(left - (box_left - mid));
-        paint(
-            box_left - d - step,
-            top - slack,
-            step,
-            bottom - top + 2. * slack,
-            a,
-        );
-        let a = falloff(box_right + mid - right);
-        paint(
-            box_right + d,
-            top - slack,
-            step,
-            bottom - top + 2. * slack,
-            a,
-        );
-        d += step;
-    }
+    // The shadow's reach minus the box, as four rectangles that do not overlap: the full
+    // width above and below the box, and the box's own height to its left and right.
+    let top_end = box_top.min(reach_bottom);
+    let bottom_start = box_bottom.max(reach_top);
+    tile(reach_left, reach_top, reach_right, top_end);
+    tile(reach_left, bottom_start, reach_right, reach_bottom);
+    let (side_top, side_bottom) = (box_top.max(reach_top), box_bottom.min(reach_bottom));
+    tile(reach_left, side_top, box_left.min(reach_right), side_bottom);
+    tile(
+        box_right.max(reach_left),
+        side_top,
+        reach_right,
+        side_bottom,
+    );
 }
 
 /// The element's top-left corner radius as set so far, or `rounded-lg`.
@@ -269,4 +271,21 @@ pub fn shadow_sm(fade: f32) -> Vec<BoxShadow> {
             spread_radius: px(-1.),
         },
     ]
+}
+
+#[cfg(test)]
+mod shadow_tests {
+    use super::coverage;
+
+    #[test]
+    fn coverage_is_a_blurred_interval() {
+        // Well inside, on an edge, and far outside an interval blurred over sigma 4.
+        assert!((coverage(50., 0., 100., 4.) - 1.).abs() < 1e-4);
+        assert!((coverage(0., 0., 100., 4.) - 0.5).abs() < 1e-3);
+        assert!((coverage(100., 0., 100., 4.) - 0.5).abs() < 1e-3);
+        assert!(coverage(-20., 0., 100., 4.) < 1e-4);
+        // It falls off smoothly and symmetrically.
+        assert!(coverage(-2., 0., 100., 4.) > coverage(-4., 0., 100., 4.));
+        assert!((coverage(-3., 0., 100., 4.) - coverage(103., 0., 100., 4.)).abs() < 1e-4);
+    }
 }
