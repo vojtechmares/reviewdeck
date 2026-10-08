@@ -75,7 +75,7 @@ fn run_row(index: usize, run: &CheckRun, cx: &App) -> impl IntoElement {
                     div()
                         .truncate()
                         .text_size(rpx(12.5))
-                        .line_height(rpx(18.))
+                        .line_height(rpx(18.75))
                         .font_weight(FontWeight::MEDIUM)
                         .child(run.name.clone()),
                 )
@@ -86,7 +86,7 @@ fn run_row(index: usize, run: &CheckRun, cx: &App) -> impl IntoElement {
                             div()
                                 .truncate()
                                 .text_size(rpx(11.5))
-                                .line_height(rpx(16.))
+                                .line_height(rpx(17.25))
                                 .text_color(colors.muted_foreground)
                                 .child(description),
                         )
@@ -100,6 +100,7 @@ fn run_row(index: usize, run: &CheckRun, cx: &App) -> impl IntoElement {
                     .flex_none()
                     .cursor_pointer()
                     .text_size(rpx(11.5))
+                    .line_height(rpx(17.25))
                     .text_color(colors.info)
                     .hover(|style| style.opacity(0.75))
                     .on_click(move |_, _, cx| {
@@ -121,6 +122,7 @@ pub fn checks_panel(checks: &CheckSummary, cx: &App) -> impl IntoElement {
             .py(rpx(24.))
             .text_center()
             .text_size(rpx(12.5))
+            .line_height(rpx(18.75))
             .text_color(colors.muted_foreground)
             .child("No status checks reported for this branch.");
     }
@@ -142,12 +144,15 @@ pub fn checks_panel(checks: &CheckSummary, cx: &App) -> impl IntoElement {
                     .child(
                         div()
                             .flex_none()
+                            // the icon's box measures narrower than it paints, so the
+                            // spacing after it is added on top of the row's gap
                             .mr(rpx(12.))
                             .child(check_icon(checks.status, 16., cx)),
                     )
                     .child(
                         div()
                             .text_size(rpx(13.))
+                            .line_height(rpx(19.5))
                             .font_weight(FontWeight::MEDIUM)
                             .child(headline(checks)),
                     )
@@ -155,6 +160,7 @@ pub fn checks_panel(checks: &CheckSummary, cx: &App) -> impl IntoElement {
                         div()
                             .ml_auto()
                             .text_size(rpx(11.5))
+                            .line_height(rpx(17.25))
                             .text_color(colors.muted_foreground)
                             .child(format!("{}/{} passed", checks.passed, checks.total)),
                     ),

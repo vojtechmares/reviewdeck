@@ -800,7 +800,7 @@ impl PullView {
                 gpui::transparent_black()
             })
             .text_size(rpx(12.5))
-            .line_height(rpx(18.))
+            .line_height(rpx(18.75))
             .font_weight(FontWeight::MEDIUM)
             .text_color(foreground)
             .cursor_pointer()
@@ -821,7 +821,7 @@ impl PullView {
                         .px(rpx(4.))
                         .py(rpx(1.))
                         .text_size(rpx(10.5))
-                        .line_height(rpx(15.))
+                        .line_height(rpx(15.75))
                         .font_weight(FontWeight::NORMAL)
                         .text_color(colors.muted_foreground)
                         .child(count.to_string()),
@@ -838,7 +838,7 @@ impl PullView {
             .items_center()
             .gap(rpx(6.))
             .text_size(rpx(11.5))
-            .line_height(rpx(16.))
+            .line_height(rpx(17.25))
             .text_color(colors.muted_foreground)
             .child(
                 Icon::provider(item.provider)
@@ -889,6 +889,7 @@ impl PullView {
                         div()
                             .font_family(mono_font())
                             .text_size(rpx(10.5))
+                            .line_height(rpx(16.275))
                             .child(format!("{} → {}", item.source_branch, item.target_branch)),
                     ),
             )
@@ -1022,8 +1023,11 @@ impl PullView {
                             .child(
                                 div()
                                     .mt(rpx(2.))
+                                    .h(rpx(20.625))
+                                    // gpui seats this glyph run ~0.75pt higher in the line box than CSS does
+                                    .pt(rpx(0.75))
                                     .text_size(rpx(15.))
-                                    .line_height(rpx(21.))
+                                    .line_height(rpx(20.625))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(item.title.clone()),
                             )
@@ -1329,6 +1333,9 @@ impl PullView {
             .child(
                 div()
                     .w_full()
+                    // The TSX textarea is inline-block, so the line box under it adds ~3pt
+                    // of descender space before the button row.
+                    .mb(rpx(3.))
                     .text_size(rpx(13.))
                     .line_height(rpx(21.))
                     .text_color(colors.foreground)
