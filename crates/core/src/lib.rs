@@ -18,6 +18,7 @@ pub mod images;
 pub mod keychain;
 pub mod markdown;
 pub mod model;
+pub mod palette;
 pub mod providers;
 pub mod review_window;
 pub mod store;
