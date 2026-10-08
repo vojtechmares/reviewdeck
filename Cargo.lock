@@ -3774,7 +3774,11 @@ dependencies = [
 name = "reviewdeck"
 version = "0.1.0"
 dependencies = [
+ "block",
+ "cocoa",
+ "futures",
  "gpui",
+ "objc",
  "reviewdeck-core",
 ]
 

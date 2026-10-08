@@ -23,3 +23,9 @@ runtime-shaders = ["gpui/runtime_shaders"]
 # a no-op text system and draws no text at all.
 gpui = { workspace = true, features = ["font-kit"] }
 reviewdeck-core.workspace = true
+# AppKit glue for src/platform: the menu bar item, notifications, launch at login
+# and the appearance. All of them are already in gpui's dependency tree.
+block.workspace = true
+cocoa.workspace = true
+futures.workspace = true
+objc.workspace = true
