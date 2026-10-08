@@ -202,6 +202,7 @@ impl Tray {
     /// The live NSMenu read back from AppKit, one string per line: the title,
     /// `(title)` for a disabled line, `---` for a separator. For smoke checks of the
     /// real menu bar item, not for the app's own logic. Main thread only.
+    #[allow(dead_code)] // smoke checks only
     pub fn menu_lines(&self) -> Vec<String> {
         debug_assert!(is_main_thread(), "the tray is AppKit: main thread only");
         let _pool = AutoreleasePool::new();
@@ -235,6 +236,7 @@ impl Tray {
     /// Performs the enabled menu line titled `title` as if it were clicked, so its
     /// [`PlatformEvent`] goes out. Returns whether there was such a line. For smoke
     /// checks, like [`Tray::menu_lines`]. Main thread only.
+    #[allow(dead_code)] // smoke checks only
     pub fn click_menu_item(&self, title: &str) -> bool {
         let Some(index) = self.menu_lines().iter().position(|line| line == title) else {
             return false;
