@@ -18,10 +18,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::deck_cache::{DeckCache, empty_deck_cache, read_deck_cache};
 use crate::error::{Result, msg};
 use crate::keychain::{KeychainTokens, decrypt_safe_storage};
 use crate::model::{Account, DraftComment, NewAccount, ReviewItem, Settings, merge_settings};
@@ -32,12 +33,6 @@ pub const NO_TOKEN: &str = "No token stored for this account. Remove it and sign
 
 /// How many seen ids the vault keeps; closed PRs never come back with the same id.
 const SEEN_LIMIT: usize = 2000;
-
-/// The deck cache envelope version this build reads and writes (`DECK_CACHE_VERSION`
-/// of src/shared/deck-cache.ts). Bumped whenever a ReviewItem gains a field the
-/// cards rely on, so a deck written by an older build is discarded rather than
-/// drawn with holes in it.
-const DECK_CACHE_VERSION: u32 = 2;
 
 /// Where account tokens live. The app uses [`KeychainTokens`]; tests use
 /// [`MemoryTokens`].
@@ -105,62 +100,6 @@ impl TokenStore for MemoryTokens {
     }
 }
 
-/// The last synced deck, so a launch has reviews to show before the fan-out
-/// (`DeckCache` of src/shared/deck-cache.ts).
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct StoredDeck {
-    version: u32,
-    /// accountId -> the items that account returned on the last completed sync.
-    items: BTreeMap<String, Vec<ReviewItem>>,
-}
-
-impl StoredDeck {
-    fn empty() -> StoredDeck {
-        StoredDeck {
-            version: DECK_CACHE_VERSION,
-            items: BTreeMap::new(),
-        }
-    }
-}
-
-/// A deck cache read back off the vault, or an empty one when there is nothing
-/// usable - the `readDeckCache` of src/shared/deck-cache.ts, applied to the vault's
-/// `deck` field.
-///
-/// The cache is a hint, never truth. An envelope that is not what this build
-/// writes (a version from another build, a shape that is not an object) takes the
-/// whole cache with it. A single item that does not read as a [`ReviewItem`] only takes
-/// itself, because the rest of the deck is still worth showing and the sync on its
-/// way replaces all of it anyway.
-fn read_stored_deck(stored: Option<&Value>) -> StoredDeck {
-    let Some(Value::Object(stored)) = stored else {
-        return StoredDeck::empty();
-    };
-    if stored.get("version").and_then(Value::as_f64) != Some(f64::from(DECK_CACHE_VERSION)) {
-        return StoredDeck::empty();
-    }
-    let Some(Value::Object(stored_items)) = stored.get("items") else {
-        return StoredDeck::empty();
-    };
-    let items = stored_items
-        .iter()
-        .filter_map(|(account_id, cached)| {
-            let Value::Array(cached) = cached else {
-                return None;
-            };
-            let items = cached
-                .iter()
-                .filter_map(|item| ReviewItem::deserialize(item).ok())
-                .collect();
-            Some((account_id.clone(), items))
-        })
-        .collect();
-    StoredDeck {
-        version: DECK_CACHE_VERSION,
-        items,
-    }
-}
-
 /// The file's contents. Field order is the order the Electron app wrote them in.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -179,7 +118,7 @@ struct VaultData {
     /// divergence. Kept as stored; the draft store gives the entries their type.
     draft_sets: Map<String, Value>,
     /// The last synced deck, so a launch has reviews to show before the fan-out.
-    deck: StoredDeck,
+    deck: DeckCache,
     /// windowId -> the local day its roll-up last fired, so once a day survives a quit.
     windows_fired: BTreeMap<String, String>,
 }
@@ -194,7 +133,7 @@ impl VaultData {
             seen: Vec::new(),
             drafts: Vec::new(),
             draft_sets: Map::new(),
-            deck: StoredDeck::empty(),
+            deck: empty_deck_cache(),
             windows_fired: BTreeMap::new(),
         }
     }
@@ -237,7 +176,7 @@ impl VaultData {
                 Some(Value::Object(sets)) => sets.clone(),
                 _ => Map::new(),
             },
-            deck: read_stored_deck(parsed.get("deck")),
+            deck: read_deck_cache(parsed.get("deck")),
             windows_fired: strings(parsed.get("windowsFired")),
         }
     }
@@ -514,9 +453,9 @@ impl Vault {
         items: impl IntoIterator<Item = (String, Vec<ReviewItem>)>,
     ) -> Result<()> {
         let mut data = self.data.lock();
-        data.deck = StoredDeck {
-            version: DECK_CACHE_VERSION,
+        data.deck = DeckCache {
             items: items.into_iter().collect(),
+            ..empty_deck_cache()
         };
         self.persist(&data)
     }
@@ -581,6 +520,7 @@ impl Vault {
 mod tests {
     use super::*;
     use crate::model::{ApprovalOutcome, DiffViewMode, MyReviewState, ProviderKind, ThemeMode};
+    use serde::Deserialize;
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt as _;
 

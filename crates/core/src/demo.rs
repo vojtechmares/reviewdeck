@@ -9,8 +9,8 @@ use std::sync::LazyLock;
 
 use crate::model::{
     Account, ApprovalOutcome, ApprovalSummary, CheckRun, CheckStatus, CheckSummary, CommentThread,
-    DiffFile, DiffRefs, FileStatus, MyReviewState, ProviderKind, PullComment, PullDetail,
-    ReviewItem, Side, User,
+    DiffFile, DiffRefs, MyReviewState, ProviderKind, PullComment, PullDetail, ReviewItem, Side,
+    User,
 };
 use crate::time::{format_iso, now_iso, now_ms};
 
@@ -339,63 +339,9 @@ index 2b4c5d6..9e8f7a1 100644
  	svc := newService(gw)
 "##;
 
-/// The files of [`DEMO_DIFF`], split the way `parseUnifiedDiff` splits them.
-///
-/// A minimal reading of git's format - enough for this fixture, which is a plain
-/// two-file modification - so the fixture does not depend on the diff module:
-/// the `---`/`+++` paths without their `a/`/`b/` prefixes, everything from the
-/// first hunk to the next file header as the patch, and the `+`/`-` lines counted.
+/// The files of [`DEMO_DIFF`], read by the same parser the providers use.
 fn demo_files() -> Vec<DiffFile> {
-    let lines: Vec<&str> = DEMO_DIFF.split('\n').collect();
-    let mut files = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if !lines[i].starts_with("diff ") {
-            i += 1;
-            continue;
-        }
-        i += 1;
-        let mut old_path = "";
-        let mut new_path = "";
-        while i < lines.len() && !lines[i].starts_with("@@") && !lines[i].starts_with("diff ") {
-            let line = lines[i];
-            let strip = |path: &'static str| {
-                path.trim()
-                    .strip_prefix("a/")
-                    .or_else(|| path.trim().strip_prefix("b/"))
-                    .unwrap_or(path.trim())
-            };
-            if let Some(path) = line.strip_prefix("--- ") {
-                old_path = strip(path);
-            } else if let Some(path) = line.strip_prefix("+++ ") {
-                new_path = strip(path);
-            }
-            i += 1;
-        }
-        let start = i;
-        while i < lines.len() && !lines[i].starts_with("diff ") {
-            i += 1;
-        }
-        let body = &lines[start..i];
-        let additions = body
-            .iter()
-            .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
-            .count() as u32;
-        let deletions = body
-            .iter()
-            .filter(|line| line.starts_with('-') && !line.starts_with("---"))
-            .count() as u32;
-        files.push(DiffFile {
-            path: new_path.to_string(),
-            old_path: old_path.to_string(),
-            status: FileStatus::Modified,
-            additions,
-            deletions,
-            patch: Some(body.join("\n")),
-            binary: false,
-        });
-    }
-    files
+    crate::diff::parse_unified_diff(DEMO_DIFF)
 }
 
 fn comment(id: &str, author: &str, body: &str, minutes: i64) -> PullComment {
@@ -496,6 +442,7 @@ pub fn demo_detail(item: &ReviewItem) -> PullDetail {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::FileStatus;
     use crate::time::parse_iso;
 
     #[test]
