@@ -7,6 +7,7 @@ pub mod app_view;
 pub mod approval_badge;
 pub mod check_pill;
 pub mod checks_panel;
+pub mod code;
 pub mod components;
 pub mod diff_view;
 pub mod draft_view;
