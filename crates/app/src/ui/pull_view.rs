@@ -120,6 +120,8 @@ pub struct PullView {
     body: Entity<TextInput>,
     /// The placeholder the composer currently shows, so it is only replaced on a change.
     placeholder: SharedString,
+    /// The composer's height in rows, kept so it is only changed on a change.
+    rows: usize,
     submitting: bool,
     /// The freshly loaded diff, held while the reviewer is told the author pushed.
     pushed: Option<PullDetail>,
@@ -185,6 +187,17 @@ fn pending_label(count: usize) -> String {
     )
 }
 
+/// The composer's height: one row at rest, three once a review is taking shape - a
+/// verdict picked, words typed or drafts waiting (`rows={verdict || body ||
+/// drafts.length ? 3 : 1}`).
+fn composer_rows(verdict: Option<ReviewVerdict>, has_drafts: bool, typed: bool) -> usize {
+    if verdict.is_some() || has_drafts || typed {
+        3
+    } else {
+        1
+    }
+}
+
 /// The composer's placeholder for the verdict and drafts it holds.
 fn placeholder_for(verdict: Option<ReviewVerdict>, has_drafts: bool) -> &'static str {
     match verdict {
@@ -223,9 +236,14 @@ impl PullView {
         };
 
         let placeholder: SharedString = placeholder_for(None, !drafts.is_empty()).into();
+        let rows = composer_rows(None, !drafts.is_empty(), false);
         let body = {
             let placeholder = placeholder.clone();
-            cx.new(|cx| TextInput::new(cx).multi_line(1, 3).placeholder(placeholder))
+            cx.new(|cx| {
+                TextInput::new(cx)
+                    .multi_line(rows, rows)
+                    .placeholder(placeholder)
+            })
         };
 
         let subscriptions = vec![
@@ -269,6 +287,7 @@ impl PullView {
             verdict: None,
             body,
             placeholder,
+            rows,
             submitting: false,
             pushed: None,
             diverged,
@@ -1243,6 +1262,13 @@ impl PullView {
             self.placeholder = placeholder.clone();
             self.body
                 .update(cx, |body, cx| body.set_placeholder(placeholder, cx));
+        }
+        let typed = !self.body.read(cx).text().is_empty();
+        let rows = composer_rows(self.verdict, has_drafts, typed);
+        if rows != self.rows {
+            self.rows = rows;
+            self.body
+                .update(cx, |body, cx| body.set_rows(rows, rows, cx));
         }
         let can_submit = self.can_submit(cx);
         let label = submit_label(self.verdict, has_drafts);

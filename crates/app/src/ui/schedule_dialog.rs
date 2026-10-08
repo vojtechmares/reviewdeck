@@ -125,9 +125,8 @@ impl ScheduleDialog {
                                 Field::Minimum => window.minimum = parse_minimum(&text),
                             });
                         }
-                        // Escape closes the dialog wherever the focus is.
-                        TextInputEvent::Cancel => cx.emit(DismissEvent),
-                        TextInputEvent::Submit => {}
+                        // Escape in a field travels on to the Dialog, which closes.
+                        TextInputEvent::Cancel | TextInputEvent::Submit => {}
                     }
                 },
             ));
