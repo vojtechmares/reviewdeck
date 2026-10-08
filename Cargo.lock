@@ -3782,17 +3782,21 @@ dependencies = [
 name = "reviewdeck-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures",
  "libc",
+ "miniz_oxide 0.9.1",
  "parking_lot",
  "pulldown-cmark",
  "regex",
+ "security-framework",
  "serde",
  "serde_json",
  "syntect",
  "tokio",
  "two-face",
  "url",
+ "uuid",
  "zed-reqwest",
 ]
 

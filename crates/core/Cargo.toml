@@ -12,15 +12,19 @@ name = "reviewdeck_core"
 path = "src/lib.rs"
 
 [dependencies]
+base64.workspace = true
 futures.workspace = true
 libc.workspace = true
+miniz_oxide = "0.9.1"
 parking_lot.workspace = true
 pulldown-cmark.workspace = true
 regex.workspace = true
 reqwest.workspace = true
+security-framework.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 syntect.workspace = true
 tokio.workspace = true
 two-face.workspace = true
 url.workspace = true
+uuid.workspace = true
