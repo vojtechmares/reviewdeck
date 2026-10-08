@@ -34,6 +34,7 @@ use reviewdeck_core::markdown::{
 };
 
 use crate::ui::code::{self, CodeKind};
+use crate::ui::icons::IconName;
 use crate::ui::theme::{ActiveTheme, Colors, MONO_FONT, UI_FONT, rpx};
 
 /// Loads an authenticated image: `(account id, url, app)` -> the decoded image, or
@@ -44,14 +45,15 @@ pub type ImageLoader = Rc<dyn Fn(&str, &str, &mut App) -> Option<Arc<Image>>>;
 /// `font-weight: 650` in index.css, used for headings and `strong`.
 const PROSE_WEIGHT: f32 = 650.;
 
-/// Source of the GitHub alert icons: `icons/<name>.svg`, embedded with the other
-/// lucide icons (see `icons.rs`). The names are the lucide ones.
-fn alert_icon(kind: AlertKind) -> &'static str {
+/// The lucide icon each GitHub alert kind carries, as Markdown.tsx's ALERTS table
+/// assigns them.
+fn alert_icon(kind: AlertKind) -> IconName {
     match kind {
-        AlertKind::Note | AlertKind::Important => "info",
-        AlertKind::Tip => "lightbulb",
-        AlertKind::Warning => "triangle-alert",
-        AlertKind::Caution => "octagon-alert",
+        AlertKind::Note => IconName::Info,
+        AlertKind::Tip => IconName::Lightbulb,
+        AlertKind::Important => IconName::MessageSquareWarning,
+        AlertKind::Warning => IconName::TriangleAlert,
+        AlertKind::Caution => IconName::OctagonAlert,
     }
 }
 
@@ -702,10 +704,7 @@ fn alert_element(
         .text_color(tone)
         .child(
             svg()
-                .path(SharedString::from(format!(
-                    "icons/{}.svg",
-                    alert_icon(kind)
-                )))
+                .path(alert_icon(kind).path())
                 .size(rpx(14.))
                 .flex_none()
                 .text_color(tone),
@@ -1138,6 +1137,7 @@ impl MarkdownView {
     }
 
     /// Replaces the authenticated image loader, and redraws with it.
+    #[allow(dead_code)]
     pub fn set_images(&mut self, images: Option<ImageLoader>, cx: &mut Context<Self>) {
         self.images = images;
         cx.notify();

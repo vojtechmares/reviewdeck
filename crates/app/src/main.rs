@@ -17,9 +17,9 @@ use futures::StreamExt;
 use futures::future::BoxFuture;
 use gpui::http_client::{AsyncBody, HttpClient, Request, Response, Url, anyhow, http::HeaderValue};
 use gpui::{
-    App, AppContext, AsyncApp, Global, KeyBinding, Menu, MenuItem, OsAction,
-    SystemMenuType, TitlebarOptions, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowHandle, WindowOptions, actions, point, px, size,
+    App, AppContext, AsyncApp, Global, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType,
+    TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowOptions,
+    actions, point, px, size,
 };
 use reviewdeck_core::http::{Http, Method, RequestOptions};
 use reviewdeck_core::model::ThemeMode;
@@ -251,9 +251,9 @@ fn main() {
     let app = gpui::Application::new()
         .with_assets(ui::icons::Assets)
         .with_http_client(Arc::new(ImageHttp {
-        http: http.clone(),
-        user_agent: HeaderValue::from_static("Reviewdeck"),
-    }));
+            http: http.clone(),
+            user_agent: HeaderValue::from_static("Reviewdeck"),
+        }));
 
     // Dock click with no visible window reopens it.
     app.on_reopen(|cx: &mut App| {

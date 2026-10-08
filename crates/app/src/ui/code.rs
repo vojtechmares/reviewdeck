@@ -28,6 +28,7 @@ pub type Lines = Vec<Vec<Token>>;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CodeKind {
     /// A language id the diff picked from the file name (`language_for`).
+    #[allow(dead_code)]
     Language(String),
     /// The tag of a markdown fence, read the way `highlight_code` reads it.
     Fence(String),
@@ -101,6 +102,7 @@ pub fn highlight(kind: &CodeKind, text: &str, dark: bool) -> Option<Arc<Lines>> 
 
 /// [`highlight`] as a task: ready at once on a cache hit, otherwise run on the
 /// background executor and handed back to whoever awaits it.
+#[allow(dead_code)] // the diff view keeps its own per-file cache
 pub fn highlight_task<C: AppContext>(
     cx: &C,
     kind: CodeKind,

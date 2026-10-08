@@ -195,6 +195,7 @@ impl IconName {
     }
 
     /// An [`Icon`] element for this icon at the default size (16px).
+    #[allow(dead_code)]
     pub fn icon(self) -> Icon {
         Icon::new(self)
     }

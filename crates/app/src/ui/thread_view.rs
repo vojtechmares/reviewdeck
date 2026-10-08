@@ -8,10 +8,9 @@
 //!
 //! The React component took `onReply` / `onResolve` callbacks from its owner. Here the
 //! card performs both itself through [`AppState`] (`reply_to_thread`,
-//! `set_thread_resolved`), keeps its own busy and error state, and tells its owner with
-//! [`ThreadEvent::Changed`] once the thread on the host is different, so the owner
-//! reloads the threads. In the TSX "the caller has already surfaced" a failure; with no
-//! caller to do it, the card shows the message itself, under the controls it came from.
+//! `set_thread_resolved`), keeps its own busy state, raises the toasts PullView.tsx
+//! raised for it, and tells its owner with [`ThreadEvent::Changed`] once the thread on
+//! the host is different, so the owner reloads the threads.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -27,11 +26,13 @@ use reviewdeck_core::model::{CommentThread, PullComment};
 use reviewdeck_core::time::{now_ms, relative_time};
 
 use crate::state::{AppState, GlobalState};
+use crate::ui::app_view::toast;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::badge::{Badge, BadgeTone};
 use crate::ui::components::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::components::glass::GlassExt;
 use crate::ui::components::input::{TextInput, TextInputEvent};
+use crate::ui::components::toast::ToastKind;
 use crate::ui::icons::{Icon, IconName};
 use crate::ui::markdown_view::{ImageLoader, MarkdownView};
 use crate::ui::theme::{ActiveTheme, MONO_FONT, UI_FONT, radius, rpx};
@@ -49,8 +50,6 @@ struct ReplyBox {
     input: Entity<TextInput>,
     /// A reply is on its way: the field and both buttons are disabled.
     busy: bool,
-    /// Why the last attempt failed. What was typed is kept.
-    error: Option<SharedString>,
     _subscription: Subscription,
 }
 
@@ -67,7 +66,6 @@ pub struct ThreadCard {
     reply: Option<ReplyBox>,
     /// Resolve or reopen is on its way.
     resolving: bool,
-    resolve_error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -93,7 +91,6 @@ impl ThreadCard {
             bodies: HashMap::new(),
             reply: None,
             resolving: false,
-            resolve_error: None,
             _subscriptions: subscriptions,
         };
         card.sync_bodies(cx);
@@ -157,7 +154,6 @@ impl ThreadCard {
         self.reply = Some(ReplyBox {
             input,
             busy: false,
-            error: None,
             _subscription: subscription,
         });
         cx.notify();
@@ -179,7 +175,6 @@ impl ThreadCard {
             return;
         }
         reply.busy = true;
-        reply.error = None;
         let input = reply.input.clone();
         input.update(cx, |input, cx| input.set_disabled(true, cx));
 
@@ -199,9 +194,11 @@ impl ThreadCard {
                 match result {
                     Ok(()) => {
                         this.reply = None;
+                        toast(cx, ToastKind::Ok, "Reply posted.");
                         cx.emit(ThreadEvent::Changed);
                     }
-                    Err(error) => reply.error = Some(error.to_string().into()),
+                    // What was typed stays, so the reply can be sent again.
+                    Err(error) => toast(cx, ToastKind::Bad, error.to_string()),
                 }
                 cx.notify();
             })
@@ -217,7 +214,6 @@ impl ThreadCard {
             return;
         }
         self.resolving = true;
-        self.resolve_error = None;
         let resolved = !self.thread.resolved;
         let task = self.state.update(cx, |state, cx| {
             state.set_thread_resolved(&self.item_id, &self.thread.id, resolved, cx)
@@ -227,8 +223,19 @@ impl ThreadCard {
             this.update(cx, |this, cx| {
                 this.resolving = false;
                 match result {
-                    Ok(()) => cx.emit(ThreadEvent::Changed),
-                    Err(error) => this.resolve_error = Some(error.to_string().into()),
+                    Ok(()) => {
+                        toast(
+                            cx,
+                            ToastKind::Ok,
+                            if resolved {
+                                "Thread resolved."
+                            } else {
+                                "Thread reopened."
+                            },
+                        );
+                        cx.emit(ThreadEvent::Changed);
+                    }
+                    Err(error) => toast(cx, ToastKind::Bad, error.to_string()),
                 }
                 cx.notify();
             })
@@ -336,47 +343,37 @@ impl ThreadCard {
         let colors = cx.theme().colors;
         let empty = reply.input.read(cx).text().trim().is_empty();
         let busy = reply.busy;
-        div()
-            .mt(rpx(8.))
-            .child(reply.input.clone())
-            .children(reply.error.clone().map(|error| {
-                div()
-                    .mt(rpx(4.))
-                    .text_size(rpx(11.5))
-                    .text_color(colors.bad)
-                    .child(error)
-            }))
-            .child(
-                div()
-                    .mt(rpx(6.))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(rpx(6.))
-                    .child(
-                        div()
-                            .mr_auto()
-                            .text_size(rpx(10.5))
-                            .text_color(colors.muted_foreground)
-                            .child("⌘↵ to send"),
-                    )
-                    .child(
-                        Button::new("reply-cancel")
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Ghost)
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel_reply(cx)))
-                            .child("Cancel"),
-                    )
-                    .child(
-                        Button::new("reply-send")
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Default)
-                            .disabled(empty || busy)
-                            .on_click(cx.listener(|this, _, _, cx| this.send_reply(cx)))
-                            .child(if busy { "Sending…" } else { "Reply" }),
-                    ),
-            )
+        div().mt(rpx(8.)).child(reply.input.clone()).child(
+            div()
+                .mt(rpx(6.))
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(rpx(6.))
+                .child(
+                    div()
+                        .mr_auto()
+                        .text_size(rpx(10.5))
+                        .text_color(colors.muted_foreground)
+                        .child("⌘↵ to send"),
+                )
+                .child(
+                    Button::new("reply-cancel")
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Ghost)
+                        .disabled(busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.cancel_reply(cx)))
+                        .child("Cancel"),
+                )
+                .child(
+                    Button::new("reply-send")
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Default)
+                        .disabled(empty || busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.send_reply(cx)))
+                        .child(if busy { "Sending…" } else { "Reply" }),
+                ),
+        )
     }
 }
 
@@ -465,16 +462,6 @@ impl Render for ThreadCard {
                             ),
                         )
                     }),
-            );
-        }
-
-        if let Some(error) = self.resolve_error.clone() {
-            article = article.child(
-                div()
-                    .mt(rpx(4.))
-                    .text_size(rpx(11.5))
-                    .text_color(colors.bad)
-                    .child(error),
             );
         }
 

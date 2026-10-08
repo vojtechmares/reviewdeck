@@ -113,6 +113,7 @@ impl SecureInput {
         &self.value
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
     }
