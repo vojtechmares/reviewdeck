@@ -169,12 +169,12 @@ impl RenderOnce for Popover {
         .with_priority(1);
 
         // `max-h-(--radix-popover-content-available-height) overflow-y-auto`, with the
-        // `collisionPadding` of 12px taken off each side.
+        // `collisionPadding` of 12px taken off each side. No padding of its own, as
+        // Radix's PopoverContent has none: the content brings what it needs.
         let scroller = div()
             .id((self.id.clone(), "scroll"))
             .max_h(viewport.height - px(24.))
             .overflow_y_scroll()
-            .py(rpx(4.))
             .child(content);
         let mut panel = div()
             .key_context("Popover")

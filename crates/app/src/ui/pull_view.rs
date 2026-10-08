@@ -1002,11 +1002,11 @@ impl PullView {
             ))
             .children(mode_toggle);
 
+        // `glass-quiet border-b`: the quiet film with its hairline on every side, which
+        // doubles up with the app header's and the sidebar's edges as it did in Electron.
         div()
             .flex_none()
-            .bg(colors.surface_muted)
-            .border_b_1()
-            .border_color(colors.border)
+            .glass_quiet(cx)
             .px(rpx(20.))
             .pt(rpx(12.))
             .child(
@@ -1310,11 +1310,10 @@ impl PullView {
         let can_submit = self.can_submit(cx);
         let label = submit_label(self.verdict, has_drafts);
 
+        // `glass-quiet border-t`: a hairline on every side, as the header above.
         div()
             .flex_none()
-            .bg(colors.surface_muted)
-            .border_t_1()
-            .border_color(colors.border)
+            .glass_quiet(cx)
             .p(rpx(12.))
             // The TSX took Ctrl+Enter as well as Cmd+Enter. The input binds Cmd+Enter
             // (as `TextInputEvent::Submit`); Ctrl+Enter is unbound there, so it

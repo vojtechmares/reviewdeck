@@ -29,8 +29,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, FocusHandle, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div,
-    prelude::FluentBuilder, relative,
+    ParentElement, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    Window, div, prelude::FluentBuilder, px, relative,
 };
 
 use crate::ui::icons::IconName;
@@ -114,6 +114,8 @@ impl RenderOnce for Dialog {
         );
         if !*opened.read(cx) {
             opened.update(cx, |value, _| *value = true);
+            // The body's overflow is measured by this frame's layout; draw once more with it.
+            window.on_next_frame(|window, _| window.refresh());
             let panel = self.focus.clone();
             window.defer(cx, move |window, cx| {
                 window.focus(&panel);
@@ -170,14 +172,53 @@ impl RenderOnce for Dialog {
             .child(heading)
             .child(close_button);
 
+        // The body scrolls, and when it overflows it takes Chromium's classic scrollbar
+        // with it: a 10px track at the right edge that narrows the content (so text wraps
+        // where it did in Electron) with the slim thumb in it. Whether it overflows is
+        // only known after layout, so the first frame asks for one more.
+        let scroll = window
+            .use_keyed_state(
+                SharedString::from(format!("dialog-scroll-{}", self.title)),
+                cx,
+                |_, _| ScrollHandle::new(),
+            )
+            .read(cx)
+            .clone();
+        let overflow = scroll.max_offset().height > px(0.);
+        let thumb = super::scroll::thumb(
+            scroll.offset().y,
+            scroll.max_offset().height,
+            scroll.bounds().size.height,
+        )
+        .map(|(top, height)| {
+            div()
+                .absolute()
+                .top(top)
+                .right(px(3.))
+                .w(px(4.))
+                .h(height)
+                .rounded_full()
+                .bg(colors.border_strong)
+        });
         let body = div()
-            .id("dialog-body")
+            .relative()
             .min_h_0()
             .flex_1()
-            .overflow_y_scroll()
-            .px(rpx(20.))
-            .pb(rpx(16.))
-            .children(self.children);
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("dialog-body")
+                    .min_h_0()
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .pl(rpx(20.))
+                    .pr(if overflow { rpx(30.) } else { rpx(20.) })
+                    .pb(rpx(16.))
+                    .children(self.children),
+            )
+            .children(thumb);
 
         let footer = (!self.footer.is_empty()).then(|| {
             div()
