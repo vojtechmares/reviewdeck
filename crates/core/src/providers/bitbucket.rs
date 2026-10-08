@@ -102,7 +102,8 @@ struct BbBranchRestriction {
     kind: Option<String>,
     pattern: Option<String>,
     branch_match_kind: Option<String>,
-    value: Option<i64>,
+    /// A whole number on the host; read as a float so a `2.0` still counts.
+    value: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,7 +353,8 @@ fn required_for(restrictions: &[BbBranchRestriction], branch: &str) -> Option<u3
         if !restriction_covers(&pattern, branch) {
             continue;
         }
-        let value = u32::try_from(restriction.value.unwrap_or(0).max(0)).unwrap_or(u32::MAX);
+        // Saturating float-to-int cast: negatives and NaN read as zero.
+        let value = restriction.value.unwrap_or(0.0) as u32;
         required = Some(required.unwrap_or(0).max(value));
     }
     required
@@ -750,12 +752,17 @@ pub async fn reply_to_thread(
     thread_id: &str,
     body: &str,
 ) -> Result<()> {
-    // `Number(threadId)` in the TypeScript: a non-numeric id goes out as JSON null.
-    let parent_id = thread_id
-        .trim()
-        .parse::<u64>()
-        .map(Value::from)
-        .unwrap_or(Value::Null);
+    // `Number(threadId)` in the TypeScript: an empty id is 0 and a non-numeric one
+    // goes out as JSON null (NaN).
+    let trimmed = thread_id.trim();
+    let parent_id = if trimmed.is_empty() {
+        Value::from(0)
+    } else {
+        trimmed
+            .parse::<u64>()
+            .map(Value::from)
+            .unwrap_or(Value::Null)
+    };
     http.request(
         &pull_request_url(item, "/comments"),
         creds(s)
@@ -1386,19 +1393,19 @@ Binary files a/img/logo.png and b/img/logo.png differ\n"
 
     #[test]
     fn branch_restrictions_read_by_glob_and_largest_value() {
-        let restriction = |pattern: &str, value: Option<i64>, kind: &str| BbBranchRestriction {
+        let restriction = |pattern: &str, value: Option<f64>, kind: &str| BbBranchRestriction {
             kind: Some(kind.into()),
             pattern: Some(pattern.into()),
             branch_match_kind: Some("glob".into()),
             value,
         };
         let rules = vec![
-            restriction("main", Some(1), "require_approvals_to_merge"),
-            restriction("*", Some(2), "require_approvals_to_merge"),
-            restriction("release/*", Some(5), "require_approvals_to_merge"),
-            restriction("*", Some(9), "require_approvals_to_build"),
-            restriction("m**", Some(7), "require_approvals_to_merge"),
-            restriction("feat*", Some(-4), "require_approvals_to_merge"),
+            restriction("main", Some(1.0), "require_approvals_to_merge"),
+            restriction("*", Some(2.0), "require_approvals_to_merge"),
+            restriction("release/*", Some(5.0), "require_approvals_to_merge"),
+            restriction("*", Some(9.0), "require_approvals_to_build"),
+            restriction("m**", Some(7.0), "require_approvals_to_merge"),
+            restriction("feat*", Some(-4.0), "require_approvals_to_merge"),
         ];
         // "*", "m**" and "main" cover "main"; the largest value counts.
         assert_eq!(required_for(&rules, "main"), Some(7));
@@ -1919,6 +1926,33 @@ Binary files a/img/logo.png and b/img/logo.png differ\n"
             log.lock()[0].json_body(),
             Some(json!({"content": {"raw": "Hmm"}, "parent": {"id": null}}))
         );
+    }
+
+    #[test]
+    fn a_reply_to_an_empty_thread_id_names_parent_zero_as_number_does() {
+        let (http, log) = mock(vec![ok_empty("POST", COMMENTS_URL)]);
+        futures::executor::block_on(reply_to_thread(
+            &http,
+            &session(),
+            &tracked_item(),
+            " ",
+            "Hm",
+        ))
+        .expect("replies");
+        assert_eq!(
+            log.lock()[0].json_body(),
+            Some(json!({"content": {"raw": "Hm"}, "parent": {"id": 0}}))
+        );
+    }
+
+    #[test]
+    fn a_restriction_value_sent_as_a_float_still_counts() {
+        let restrictions: Vec<BbBranchRestriction> = lenient(vec![
+            json!({"kind": "require_approvals_to_merge", "pattern": "main", "value": 2.0}),
+            json!({"kind": "require_approvals_to_merge", "pattern": "main", "value": -1}),
+            json!({"kind": "require_approvals_to_merge", "pattern": "main", "value": null}),
+        ]);
+        assert_eq!(required_for(&restrictions, "main"), Some(2));
     }
 
     #[test]
