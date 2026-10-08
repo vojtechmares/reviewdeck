@@ -23,11 +23,11 @@ use std::ops::Range;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, Context, Div, Entity, EventEmitter,
-    FocusHandle, Focusable, FontWeight, HighlightStyle, Hsla, KeyDownEvent, ListAlignment,
-    ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, StyledText, Subscription, Window, div, list,
-    prelude::*, px, relative,
+    AnyElement, AnyView, App, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, FontWeight, HighlightStyle, Hsla, KeyDownEvent, ListAlignment, ListState,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, StyledText, Subscription, Window, div, list, prelude::*,
+    px, relative,
 };
 use reviewdeck_core::diff::{
     CommentTarget, DiffHunk, DiffLine, DiffLineKind, DiffSide, LineAnchor, LineRef, SplitRow,
@@ -287,7 +287,8 @@ impl DiffView {
             .iter()
             .map(|thread| (thread.id.as_str(), thread))
             .collect();
-        self.thread_cards.retain(|id, _| live.contains_key(id.as_str()));
+        self.thread_cards
+            .retain(|id, _| live.contains_key(id.as_str()));
         for (id, (card, _)) in &self.thread_cards {
             if let Some(thread) = live.get(id.as_str()) {
                 card.update(cx, |card, cx| card.set_thread((*thread).clone(), cx));
@@ -340,7 +341,8 @@ impl DiffView {
                 .iter()
                 .map(|draft| (draft.id.as_str(), draft))
                 .collect();
-            self.draft_cards.retain(|id, _| live.contains_key(id.as_str()));
+            self.draft_cards
+                .retain(|id, _| live.contains_key(id.as_str()));
             for (id, card) in &self.draft_cards {
                 if let Some(draft) = live.get(id.as_str()) {
                     card.update(cx, |card, cx| card.set_draft((*draft).clone(), cx));
@@ -396,13 +398,14 @@ impl DiffView {
                                     row.right.map(|l| &hunk.lines[l]),
                                 );
                                 // Threads: on the new line when there is one, else the old.
-                                let threads = file.threads.iter().enumerate().filter(|(_, t)| {
-                                    match (right, left) {
-                                        (Some(right), _) => t.line == right.new_line,
-                                        (None, Some(left)) => t.line == left.old_line,
-                                        _ => false,
-                                    }
-                                });
+                                let threads =
+                                    file.threads.iter().enumerate().filter(|(_, t)| {
+                                        match (right, left) {
+                                            (Some(right), _) => t.line == right.new_line,
+                                            (None, Some(left)) => t.line == left.old_line,
+                                            _ => false,
+                                        }
+                                    });
                                 for (t, _) in threads {
                                     items.push((Item::Thread(f, t, file.thread_revs[t]), false));
                                 }
@@ -410,14 +413,19 @@ impl DiffView {
                                 push_drafts(&mut items, f, &file.drafts, anchor);
                                 if let Some(composer) = &file.composer {
                                     let target = &composer.target;
-                                    let active = right
-                                        .is_some_and(|r| target.new_line.is_some() && target.new_line == r.new_line)
-                                        || left.is_some_and(|l| {
-                                            target.old_line.is_some() && target.old_line == l.old_line
-                                        });
+                                    let active = right.is_some_and(|r| {
+                                        target.new_line.is_some() && target.new_line == r.new_line
+                                    }) || left.is_some_and(|l| {
+                                        target.old_line.is_some() && target.old_line == l.old_line
+                                    });
                                     if active {
                                         items.push((
-                                            Item::Composer(f, hash_of(&composer.error.as_ref().map(|e| e.to_string()))),
+                                            Item::Composer(
+                                                f,
+                                                hash_of(
+                                                    &composer.error.as_ref().map(|e| e.to_string()),
+                                                ),
+                                            ),
                                             false,
                                         ));
                                     }
@@ -433,7 +441,8 @@ impl DiffView {
                                 let at = line.new_line.or(line.old_line);
                                 for (t, thread) in file.threads.iter().enumerate() {
                                     if thread.line == at {
-                                        items.push((Item::Thread(f, t, file.thread_revs[t]), false));
+                                        items
+                                            .push((Item::Thread(f, t, file.thread_revs[t]), false));
                                     }
                                 }
                                 push_drafts(&mut items, f, &file.drafts, Some(line));
@@ -441,7 +450,12 @@ impl DiffView {
                                     && same_line(&composer.target, line)
                                 {
                                     items.push((
-                                        Item::Composer(f, hash_of(&composer.error.as_ref().map(|e| e.to_string()))),
+                                        Item::Composer(
+                                            f,
+                                            hash_of(
+                                                &composer.error.as_ref().map(|e| e.to_string()),
+                                            ),
+                                        ),
                                         false,
                                     ));
                                 }
@@ -470,7 +484,9 @@ impl DiffView {
                 | Item::Composer(f, _) => f,
             };
             let f = file_of(item);
-            let last = items.get(index + 1).is_none_or(|(next, _)| file_of(next) != f);
+            let last = items
+                .get(index + 1)
+                .is_none_or(|(next, _)| file_of(next) != f);
             let divider = self.files[f].open
                 && index > 0
                 && matches!(items[index - 1].0, Item::Header(_))
@@ -486,11 +502,7 @@ impl DiffView {
 
         // Splice only what differs: the common head and tail keep their measurements.
         let old = &self.entries;
-        let head = old
-            .iter()
-            .zip(&entries)
-            .take_while(|(a, b)| a == b)
-            .count();
+        let head = old.iter().zip(&entries).take_while(|(a, b)| a == b).count();
         let tail = old[head..]
             .iter()
             .rev()
@@ -578,18 +590,16 @@ impl DiffView {
             return;
         }
 
-        let input = cx.new(|cx| {
-            TextInput::new(cx)
-                .multi_line(3, 3)
-                .placeholder(placeholder)
-        });
-        let subscription = cx.subscribe(&input, move |this, _, event: &TextInputEvent, cx| {
-            match event {
-                TextInputEvent::Changed => cx.notify(),
-                TextInputEvent::Submit => this.send(f, cx),
-                TextInputEvent::Cancel => this.close_composer(f, cx),
-            }
-        });
+        let input = cx.new(|cx| TextInput::new(cx).multi_line(3, 3).placeholder(placeholder));
+        let subscription =
+            cx.subscribe(
+                &input,
+                move |this, _, event: &TextInputEvent, cx| match event {
+                    TextInputEvent::Changed => cx.notify(),
+                    TextInputEvent::Submit => this.send(f, cx),
+                    TextInputEvent::Cancel => this.close_composer(f, cx),
+                },
+            );
         input.read(cx).focus(window);
         self.files[f].composer = Some(Composer {
             target,
@@ -654,6 +664,7 @@ impl DiffView {
     /// `selection.begin`: the pointer went down on a line's comment button. Shift
     /// stretches the open composer to take this line in as well, so a range can be
     /// made without a steady hand.
+    #[allow(clippy::too_many_arguments)]
     fn begin(
         &mut self,
         f: usize,
@@ -755,7 +766,9 @@ impl DiffView {
         let hunk = &self.files[f].hunks[selecting.hunk];
         let (Some(number), Some(a), Some(b)) = (
             line_on(line, side),
-            hunk.lines.get(selecting.from).and_then(|l| line_on(l, side)),
+            hunk.lines
+                .get(selecting.from)
+                .and_then(|l| line_on(l, side)),
             hunk.lines.get(selecting.to).and_then(|l| line_on(l, side)),
         ) else {
             return false;
@@ -809,7 +822,12 @@ impl DiffView {
 
     // ----- rendering --------------------------------------------------------------------
 
-    fn render_entry(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_entry(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(entry) = self.entries.get(ix).copied() else {
             return div().into_any_element();
         };
@@ -1117,7 +1135,10 @@ impl DiffView {
             .unwrap_or_default();
         let mut styled = StyledText::new(text);
         if let Colour::Ready { styles, .. } = &file.colour
-            && let Some(runs) = styles.get(h).and_then(|lines| lines.get(l)).and_then(Option::as_ref)
+            && let Some(runs) = styles
+                .get(h)
+                .and_then(|lines| lines.get(l))
+                .and_then(Option::as_ref)
         {
             styled = styled.with_highlights(runs.iter().cloned());
         }
@@ -1128,7 +1149,15 @@ impl DiffView {
             .min_w_0()
             .bg(colors.diff_code_base)
             .when_some(tint, |d, tint| {
-                d.child(div().absolute().top_0().left_0().right_0().bottom_0().bg(tint))
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .bg(tint),
+                )
             })
             .child(
                 div()
@@ -1150,9 +1179,20 @@ impl DiffView {
             )
     }
 
-    fn unified_row(&self, f: usize, h: usize, l: usize, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn unified_row(
+        &self,
+        f: usize,
+        h: usize,
+        l: usize,
+        ix: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = cx.theme().colors;
-        let Some(line) = self.files[f].hunks.get(h).and_then(|hunk| hunk.lines.get(l)) else {
+        let Some(line) = self.files[f]
+            .hunks
+            .get(h)
+            .and_then(|hunk| hunk.lines.get(l))
+        else {
             return div().into_any_element();
         };
         let tint = match line.kind {
@@ -1163,16 +1203,35 @@ impl DiffView {
         let group = SharedString::from(format!("diff-row-{ix}"));
         let path = &self.source[f].path;
 
-        let mut row = div().group(group.clone()).flex().w_full().when_some(tint, |d, t| d.bg(t));
+        let mut row = div()
+            .group(group.clone())
+            .flex()
+            .w_full()
+            .when_some(tint, |d, t| d.bg(t));
         for (column, side) in [(0, Side::Old), (1, Side::New)] {
             let pick = side_target(path, line, side).map(|_| (f, h, side, l));
             let background = self.coverage(f, side, line).map(|c| coverage_colour(c, cx));
-            row = row.child(self.gutter(ix, column, line_on(line, side), background, pick, &group, cx));
+            row = row.child(self.gutter(
+                ix,
+                column,
+                line_on(line, side),
+                background,
+                pick,
+                &group,
+                cx,
+            ));
         }
         row.child(self.code_cell(f, h, l, cx)).into_any_element()
     }
 
-    fn split_row(&self, f: usize, h: usize, r: usize, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn split_row(
+        &self,
+        f: usize,
+        h: usize,
+        r: usize,
+        ix: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = cx.theme().colors;
         let file = &self.files[f];
         let Some(row) = file
@@ -1216,7 +1275,13 @@ impl DiffView {
         out.into_any_element()
     }
 
-    fn thread_row(&mut self, f: usize, t: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn thread_row(
+        &mut self,
+        f: usize,
+        t: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(thread) = self.files[f].threads.get(t).cloned() else {
             return div().into_any_element();
         };
@@ -1233,7 +1298,13 @@ impl DiffView {
         self.prose(AnyView::from(card), cx)
     }
 
-    fn draft_row(&mut self, f: usize, d: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn draft_row(
+        &mut self,
+        f: usize,
+        d: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(draft) = self.files[f].drafts.get(d).cloned() else {
             return div().into_any_element();
         };
@@ -1266,7 +1337,10 @@ impl DiffView {
         let empty = composer.input.read(cx).text().trim().is_empty();
         let line = target.new_line.or(target.old_line).unwrap_or(0);
         let heading = match target.range {
-            Some(range) => format!("Commenting on lines {}\u{2013}{} of", range.start_line, line),
+            Some(range) => format!(
+                "Commenting on lines {}\u{2013}{} of",
+                range.start_line, line
+            ),
             None => format!("Commenting on line {line} of"),
         };
 
@@ -1288,7 +1362,11 @@ impl DiffView {
                     .text_size(rpx(SMALL_SIZE))
                     .line_height(rpx(16.))
                     .text_color(colors.muted_foreground)
-                    .child(Icon::new(IconName::MessageSquarePlus).size(14.).color(colors.muted_foreground))
+                    .child(
+                        Icon::new(IconName::MessageSquarePlus)
+                            .size(14.)
+                            .color(colors.muted_foreground),
+                    )
                     .child(heading)
                     .child(
                         div()
@@ -1395,7 +1473,12 @@ impl Render for DiffView {
 // Pure helpers
 // ---------------------------------------------------------------------------------------
 
-fn push_drafts(items: &mut Vec<(Item, bool)>, f: usize, drafts: &[DraftComment], line: Option<&DiffLine>) {
+fn push_drafts(
+    items: &mut Vec<(Item, bool)>,
+    f: usize,
+    drafts: &[DraftComment],
+    line: Option<&DiffLine>,
+) {
     let Some(line) = line else {
         return;
     };
@@ -1440,7 +1523,11 @@ fn same_line(target: &CommentTarget, line: &DiffLine) -> bool {
 }
 
 /// Where something that stands on one line and may reach back over others sits.
-fn anchor_of(new_line: Option<u32>, old_line: Option<u32>, range: Option<LineRange>) -> Option<LineAnchor> {
+fn anchor_of(
+    new_line: Option<u32>,
+    old_line: Option<u32>,
+    range: Option<LineRange>,
+) -> Option<LineAnchor> {
     let start_line = range.map(|range| range.start_line);
     if let Some(line) = new_line {
         return Some(LineAnchor {
@@ -1459,7 +1546,12 @@ fn anchor_of(new_line: Option<u32>, old_line: Option<u32>, range: Option<LineRan
 /// The far end of an open composer, when it can be stretched to another line: the
 /// line of it furthest from the one clicked, so the new range takes in both. Nothing
 /// when the composer is on the other side or in another hunk.
-fn stretch(hunk: &DiffHunk, side: DiffSide, target: &CommentTarget, clicked: usize) -> Option<usize> {
+fn stretch(
+    hunk: &DiffHunk,
+    side: DiffSide,
+    target: &CommentTarget,
+    clicked: usize,
+) -> Option<usize> {
     let anchor = anchor_of(target.new_line, target.old_line, target.range)?;
     if anchor.side != side {
         return None;
@@ -1480,7 +1572,7 @@ fn group_thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
@@ -1488,9 +1580,10 @@ fn group_thousands(n: usize) -> String {
     out
 }
 
-/// Tab stops every this many columns: the browser's `tab-size` default. gpui would
+/// Tab stops every this many columns: what the reference screenshots of the
+/// Electron app show for the fixture's Go tabs. gpui would
 /// draw a tab as a stop of its own, so tabs are expanded.
-const TAB_SIZE: usize = 8;
+const TAB_SIZE: usize = 4;
 
 /// The text a line is shown as: the marker's blank prefix, then the content with tabs
 /// expanded, and - when there were tabs - the map from each byte offset of the content
@@ -1503,7 +1596,8 @@ fn expand(line: &str) -> (String, Option<Vec<usize>>) {
         return (out, None);
     }
     let mut map = vec![0; line.len() + 1];
-    let mut column = 0;
+    // Stops are counted from the line's start, marker included, as the browser did.
+    let mut column = MARKER_PREFIX.len();
     for (at, ch) in line.char_indices() {
         map[at] = out.len();
         if ch == '\t' {
@@ -1627,7 +1721,7 @@ mod tests {
     #[test]
     fn expand_prefixes_the_marker_and_maps_tabs() {
         let (text, map) = expand("a\tb");
-        assert_eq!(text, "  a       b");
+        assert_eq!(text, "  a b");
         let map = map.expect("a tab gives a map");
         assert_eq!(text.as_bytes()[map[2]], b'b');
         let (plain, none) = expand("xy");
