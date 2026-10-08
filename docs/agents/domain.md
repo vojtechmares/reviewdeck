@@ -2,7 +2,7 @@
 
 How the engineering skills should consume this repo's domain documentation when exploring the codebase.
 
-This is a **single-context** repo: one `CONTEXT.md` and one `docs/adr/` at the root, covering the whole app. The `src/main`, `src/preload`, `src/renderer` and `src/shared` split is an Electron process boundary, not a separate domain context.
+This is a **single-context** repo: one `CONTEXT.md` and one `docs/adr/` at the root, covering the whole app. The `crates/core` and `crates/app` split separates the logic from the UI, not one domain context from another.
 
 ## Before exploring, read these
 

@@ -25,9 +25,9 @@ a client's self-hosted GitLab, a Forgejo instance and Bitbucket, with a differen
 - **Threaded conversations.** Replies sit under what they answer, and where the host supports it
   you can reply and resolve without leaving the app. A comment on code that has since changed is
   labelled outdated rather than pointed at whatever now sits on that line.
-- **Descriptions and comments as Markdown**, GitHub-flavoured and rendered through a
-  sanitizer, so collapsible bot reports, tables and checklists read the way their author
-  meant them to - fenced code included, highlighted by the same thing the diff is.
+- **Descriptions and comments as Markdown**, GitHub-flavoured and drawn natively, so
+  collapsible bot reports, tables and checklists read the way their author meant them to -
+  fenced code included, highlighted by the same thing the diff is.
 - **A pending review.** Line comments accumulate as drafts you can edit and drop, kept per pull
   request and across restarts, and submitted together with one verdict - so the author gets one
   coherent review instead of a notification per remark. If they push while you are drafting, you
@@ -61,22 +61,26 @@ xattr -dr com.apple.quarantine /Applications/Reviewdeck.app
 
 ## Running it
 
+Reviewdeck is a native app written in Rust on [gpui](https://gpui.rs), the UI framework Zed is
+built on. It needs a Rust toolchain and Xcode with its Metal toolchain, which compiles gpui's
+shaders at build time (`xcodebuild -downloadComponent MetalToolchain` if `xcrun metal` is missing).
+
 ```sh
-pnpm install
-pnpm dev            # development, with hot reload
-pnpm build          # typecheck + production bundle
-pnpm dist           # ad-hoc signed .dmg and .zip in release/
-pnpm dist:dir       # unpacked .app in release/mac-arm64/
-pnpm test           # unit tests for the diff parser, the markdown pipeline and provider helpers
-pnpm icon           # regenerate resources/icon.icns
+cargo run -p reviewdeck              # development build
+cargo test --workspace               # every unit and interaction test
+./scripts/bundle.sh                  # ad-hoc signed .app, .dmg and .zip in release/
+./scripts/bundle.sh --dir-only       # just the .app in release/mac-arm64/
+./scripts/verify-app.sh              # check the bundle's signature, architecture and Info.plist
+node scripts/make-icon.mjs           # regenerate resources/icon.icns (needs Node, nothing else)
 ```
 
-The pnpm version is pinned in `package.json` under `packageManager`, so `corepack enable` is
-enough to get the right one.
+Without the Metal toolchain, `cargo run -p reviewdeck --features runtime-shaders` compiles the
+shaders at launch instead - slower to start, fine for a quick look.
 
 To poke at the UI without connecting a real account, run with `REVIEWDECK_DEMO=1` - the deck fills
-with fixtures and the diff viewer renders a sample pull request. Both screenshots below are that
-same fixture, the same frame in each theme:
+with fixtures and the diff viewer renders a sample pull request. `REVIEWDECK_DATA_DIR` points the
+app at another data directory, which keeps a development run away from your real accounts. Both
+screenshots below are that same fixture, the same frame in each theme:
 
 | Light | Dark |
 | --- | --- |
@@ -88,9 +92,15 @@ Reviewdeck authenticates with **personal access tokens**, not OAuth. OAuth would
 application registered up front on every instance, which is impossible for the self-hosted GitLab
 or company Forgejo you were handed a login to last week. A token works everywhere, immediately.
 
-Tokens are encrypted with Electron's `safeStorage`, which is backed by the macOS Keychain, and are
-written to `~/Library/Application Support/reviewdeck/reviewdeck.json`. They never cross into the
-renderer process - the UI only ever asks the main process to make a call on its behalf.
+Tokens live in the macOS Keychain, one item per account. Accounts, settings, drafts and the last
+synced deck are written to `~/Library/Application Support/reviewdeck/reviewdeck.json`, with no
+secret in it. The views never hold a token - they ask the app state to make a call on their
+behalf.
+
+Upgrading from the Electron build of Reviewdeck keeps everything: the native app reads the same
+file, and moves each token the Electron build had encrypted with `safeStorage` into the Keychain
+the first time it starts. macOS asks once whether Reviewdeck may read the old "reviewdeck Safe
+Storage" item; allow it, or sign in again if you would rather not.
 
 | Provider | Where to create one | Scopes needed |
 | --- | --- | --- |
@@ -111,41 +121,44 @@ token's `repo` already covers it, so nothing changed there; a fine-grained token
 ## How it fits together
 
 ```
-src/
-├── main/                 Node side: no UI, owns all network and all secrets
-│   ├── index.ts          window, tray, menu, lifecycle
-│   ├── deck.ts           the sync engine: fan-out, notifications, check polling
-│   ├── drafts.ts         unsubmitted line comments, held in memory, written on a debounce
-│   ├── store.ts          accounts + settings on disk, tokens via safeStorage
-│   ├── http.ts           fetch wrapper: timeouts, pagination, readable errors
-│   ├── ipc.ts            every channel the renderer may call
-│   └── providers/        one adapter per host, behind a single interface
-├── preload/index.ts      the contextBridge surface - the only way in
-├── shared/               types, the diff parser and the markdown pipeline, used by both sides
-└── renderer/src/         React UI
+crates/
+├── core/                 reviewdeck-core: no UI, owns all network and all secrets
+│   ├── model.rs          the types and the rules every view shares
+│   ├── http.rs           HTTP on a private runtime: timeouts, pagination, readable errors
+│   ├── store.rs          accounts, settings, drafts and the deck cache on disk
+│   ├── keychain.rs       tokens in the Keychain, and the move out of Electron's safeStorage
+│   ├── drafts.rs         unsubmitted line comments and the divergence rules
+│   ├── diff.rs           the unified diff parser
+│   ├── highlight.rs      syntax highlighting, off the main thread
+│   ├── markdown.rs       Markdown and its HTML subset, read into a tree the UI draws
+│   ├── review_window.rs  when the app may interrupt
+│   └── providers/        one adapter per host, behind one set of functions
+└── app/                  reviewdeck: the gpui app
+    ├── main.rs           window, menus, key bindings, lifecycle
+    ├── state.rs          the sync engine: fan-out, notifications, check polling, timers
+    ├── platform/         menu bar item, notifications, login item, appearance, window drag
+    └── ui/               the views and the small UI kit they are built from
 ```
 
-The renderer never talks to a Git host. It asks the main process, which holds the tokens and does
-the HTTP. Context isolation is on, node integration is off, and the renderer runs under a CSP with
-`connect-src 'self'`, so a malicious pull request title has nowhere to go.
+The views never talk to a Git host. They ask the app state, which holds the tokens and does the
+HTTP. Nothing a pull request contains is ever executed or handed to a web view: Markdown is parsed
+into a typed tree and drawn natively, and raw HTML in it is read through a fixed set of known
+tags, so a malicious pull request body has nowhere to go.
 
-The one exception is images, and it is not really one: a screenshot pasted into a private GitLab
-merge request needs a token, and an image tag cannot carry a header. Those sources are pointed at
-a `reviewdeck-image:` scheme the main process serves, which fetches them with the right account's
-token and streams the bytes back. A request is only served when the host it names belongs to the
-account it names, so no token can reach a host it does not belong to; everything else loads over
-ordinary HTTPS with no credential involved.
+The one place a token travels with content is images: a screenshot pasted into a private GitLab
+merge request needs a token. The app state fetches those itself, and only when the host the image
+is on belongs to the account asking, so no token can reach a host it does not belong to;
+everything else loads over ordinary HTTPS with no credential involved.
 
 ### Adding a provider
 
-Implement the `Provider` interface in `src/main/providers/types.ts` - connect, list review
-requests, load a diff, refresh checks, submit a review, comment, comment on a line - and register
-it in `src/main/providers/index.ts`. Everything above that layer is provider-agnostic.
+Write the adapter in `crates/core/src/providers/` - connect, list review requests, load a diff,
+refresh checks, submit a review, comment, comment on a line - and add it to the dispatch in
+`crates/core/src/providers/mod.rs`. Everything above that layer is provider-agnostic.
 
 Replying to a thread and resolving one are optional: leave them out on a host that cannot do
-them, and say so through each thread's capability flags. `src/main/providers/threads.ts` is
-where every host's comment shape becomes the one thread shape the renderer knows about, and it
-takes no imports beyond types so it stays reachable from the test suite.
+them, and say so through each thread's capability flags. `crates/core/src/providers/threads.rs`
+is where every host's comment shape becomes the one thread shape the views know about.
 
 ### Notes on the provider APIs
 
@@ -173,10 +186,10 @@ Each host makes a different part of this hard:
 
 ## Design
 
-Milky glass: macOS vibrancy supplies the blur, and the renderer paints a heavy translucent film on
-top so text stays crisp over any wallpaper. Neutral graphite palette, generous rounded corners,
-colour reserved for status. The window is deliberately *not* `transparent: true` - that disables
-vibrancy and reads as see-through rather than frosted.
+Milky glass: the window blurs the desktop behind it, and the app paints a heavy translucent film
+on top so text stays crisp over any wallpaper. Neutral graphite palette, generous rounded corners,
+colour reserved for status. The palette lives in `crates/core/src/palette.rs`, where tests hold
+syntax colours to their contrast targets against it.
 
 ## Limitations
 
@@ -195,12 +208,17 @@ This is an MVP.
   of a pull request changes without it having sent anything and says so, but it cannot reconcile
   the two halves for you - it offers to keep the drafts or discard them.
 
+- Text in the diff and in comments cannot be selected and copied: gpui draws it but has no
+  selection for static text.
+- A long token in the diff with no space in it wraps at a character rather than after a `-` or
+  `/` the way a browser would.
+
 Features are implemented here rather than pulled in, with one standing exception: parsing
-and rendering content that other people wrote. Markdown goes through `react-markdown`,
-`remark-gfm`, `rehype-raw` and `rehype-sanitize`, because a hand-written markdown parser
-and HTML sanitizer standing between an untrusted pull request body and the app would be a
-liability rather than a saving. Raw HTML is sanitized, not stripped, and the sanitized
-tree becomes React elements - no HTML string is ever handed to the DOM.
+content that other people wrote. Markdown goes through `pulldown-cmark` and syntax highlighting
+through `syntect` with `two-face`'s grammars, because a hand-written Markdown parser or grammar
+engine standing between an untrusted pull request body and the app would be a liability rather
+than a saving. Everything else the app needs - HTTP, TLS, the Keychain, the AppKit glue - comes
+from crates gpui already builds on.
 
 ## Releasing
 
@@ -221,7 +239,7 @@ tag, tests, builds, packages, publishes a GitHub release carrying the `.dmg`, th
 A prerelease tag (`v1.2.3-rc.1`) publishes the release but leaves the tap on the last stable
 version.
 
-The `version` in `package.json` is not the released version - the tag is, and the build stamps it
+The `version` in `Cargo.toml` is not the released version - the tag is, and the build stamps it
 in - so cutting a release needs no commit.
 
 The tap lives in another repository, which `github.token` cannot reach, so the workflow needs one
