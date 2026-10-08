@@ -19,11 +19,9 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 ├── docs/adr/
 │   ├── 0001-....md
 │   └── 0002-....md
-└── src/
-    ├── main/
-    ├── preload/
-    ├── renderer/
-    └── shared/
+└── crates/
+    ├── core/
+    └── app/
 ```
 
 If this repo ever grows genuinely separate contexts, switch to a `CONTEXT-MAP.md` at the root pointing at one `CONTEXT.md` per context, with context-scoped `docs/adr/` alongside each - and update this file.

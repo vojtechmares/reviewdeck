@@ -1,15 +1,11 @@
-node_modules/
-out/
+/target
 release/
-dist/
 .DS_Store
 *.log
-.vite/
-tsconfig.*.tsbuildinfo
-/target
 
-# guard against an accidental `npm install`
-package-lock.json
+# left behind in checkouts that built the Electron app
+node_modules/
+out/
 
 # never commit local credentials
 .env
