@@ -12,10 +12,10 @@ name = "reviewdeck"
 path = "src/main.rs"
 
 [features]
-default = ["runtime-shaders"]
-# Compile gpui's Metal shaders at runtime, for machines without the Metal
-# toolchain. A release build on a machine that has it can opt out with
-# `--no-default-features`.
+default = []
+# Opt-in fallback for machines without Xcode's Metal toolchain: compile gpui's
+# shaders at launch instead of at build time. Off by default, because shipping
+# them precompiled is what keeps startup fast.
 runtime-shaders = ["gpui/runtime_shaders"]
 
 [dependencies]
