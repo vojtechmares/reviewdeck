@@ -11,6 +11,11 @@
 //!   replies and resolves through `AppState`; this view only hears that a conversation
 //!   changed ([`ThreadEvent::Changed`], [`DiffEvent::ThreadsChanged`]) and reads the
 //!   threads again.
+//! - The error state also has a "Try again" button, which the TSX lacks; it reruns the
+//!   load, so a failed load no longer needs the pull request to be reselected.
+//! - The composer is one input that grows from one to three rows with its content; the
+//!   TSX showed three rows whenever a verdict or drafts were present. `TextInput` fixes
+//!   its row range at construction.
 //! - The drafts are read from `AppState` rather than remembered, so there is no
 //!   `setDrafts(await ...)` after each operation.
 
@@ -19,9 +24,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, FontWeight, HighlightStyle, InteractiveElement,
-    IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, StyledText, Subscription, Task, Window, div, prelude::FluentBuilder,
+    App, AppContext, Context, Corner, Entity, FocusHandle, FontWeight, HighlightStyle,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, StyledText, Subscription, Task, Window,
+    anchored, div, point, prelude::FluentBuilder, px,
 };
 use reviewdeck_core::agent_prompt::agent_command;
 use reviewdeck_core::autolink::repository_root_of;
@@ -36,7 +42,7 @@ use reviewdeck_core::threads::same_conversation;
 use reviewdeck_core::time::{now_ms, relative_time};
 
 use crate::state::{AppState, GlobalState};
-use crate::ui::app_view::toast;
+use crate::ui::app_view::toast as show_toast;
 use crate::ui::approval_badge::approval_badge;
 use crate::ui::check_pill::check_pill;
 use crate::ui::checks_panel::checks_panel;
@@ -55,6 +61,21 @@ use crate::ui::icons::{Icon, IconName};
 use crate::ui::markdown_view::{ImageLoader, MarkdownView};
 use crate::ui::theme::{ActiveTheme, mono_font, radius, rpx};
 use crate::ui::thread_view::{ThreadCard, ThreadEvent};
+
+/// Shows a toast. Under test it is also recorded, because the toast stack the app view
+/// owns does not exist there and has no way to be read back.
+fn toast(cx: &mut App, kind: ToastKind, message: impl Into<SharedString>) {
+    let message = message.into();
+    #[cfg(test)]
+    tests::TOASTS.with(|toasts| toasts.borrow_mut().push((kind, message.to_string())));
+    show_toast(cx, kind, message);
+}
+
+/// Gives a control a name the interaction tests can find its bounds by. A no-op wrapper
+/// outside tests: gpui's `debug_selector` does nothing in a release build.
+fn hit(name: &'static str, control: impl IntoElement) -> gpui::Div {
+    div().debug_selector(|| name.to_string()).child(control)
+}
 
 /// `type Tab`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +174,15 @@ fn plural(count: usize, singular: &str) -> String {
     } else {
         format!("{count} {singular}s")
     }
+}
+
+/// The badge over the composer: "3 pending comments". The count comes before "pending",
+/// as in the TSX, which is not where [`plural`] would put it.
+fn pending_label(count: usize) -> String {
+    format!(
+        "{count} pending comment{}",
+        if count == 1 { "" } else { "s" }
+    )
 }
 
 /// The composer's placeholder for the verdict and drafts it holds.
@@ -702,6 +732,7 @@ impl PullView {
         };
         div()
             .id(id)
+            .debug_selector(|| id.to_string())
             .flex()
             .flex_none()
             .items_center()
@@ -824,7 +855,8 @@ impl PullView {
             .flex_none()
             .items_center()
             .gap(rpx(4.))
-            .child(
+            .child(hit(
+                "copy-agent-prompt",
                 Button::new("copy-agent-prompt")
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Sm)
@@ -832,15 +864,16 @@ impl PullView {
                     .tooltip("Copy a prompt for your terminal")
                     .on_click(cx.listener(|this, _, _, cx| this.copy_agent_prompt(cx)))
                     .child("Copy Claude prompt"),
-            )
-            .child(
+            ))
+            .child(hit(
+                "open-in-browser",
                 Button::new("open-in-browser")
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Sm)
                     .icon(IconName::ExternalLink)
                     .on_click(cx.listener(move |this, _, _, cx| this.open_external(&url, cx)))
                     .child("Open"),
-            );
+            ));
 
         let mut avatar = Avatar::new(item.author.name.clone()).size(28.);
         if !item.author.avatar_url.is_empty() {
@@ -855,7 +888,8 @@ impl PullView {
                 .flex()
                 .items_center()
                 .gap(rpx(2.))
-                .child(
+                .child(hit(
+                    "diff-split",
                     Button::new("diff-split")
                         .variant(if split {
                             ButtonVariant::Subtle
@@ -867,8 +901,9 @@ impl PullView {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.set_diff_view(DiffViewMode::Split, cx)
                         })),
-                )
-                .child(
+                ))
+                .child(hit(
+                    "diff-unified",
                     Button::new("diff-unified")
                         .variant(if split {
                             ButtonVariant::Ghost
@@ -880,7 +915,7 @@ impl PullView {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.set_diff_view(DiffViewMode::Unified, cx)
                         })),
-                )
+                ))
         });
 
         let tabs = div()
@@ -995,7 +1030,8 @@ impl PullView {
                             .flex_none()
                             .items_center()
                             .gap(rpx(6.))
-                            .child(
+                            .child(hit(
+                                "keep-drafts",
                                 Button::new("keep-drafts")
                                     .size(ButtonSize::Sm)
                                     .variant(ButtonVariant::Secondary)
@@ -1007,8 +1043,9 @@ impl PullView {
                                         cx.notify();
                                     }))
                                     .child("Keep drafts"),
-                            )
-                            .child(
+                            ))
+                            .child(hit(
+                                "discard-all",
                                 Button::new("discard-all")
                                     .size(ButtonSize::Sm)
                                     .variant(ButtonVariant::Ghost)
@@ -1018,7 +1055,7 @@ impl PullView {
                                         cx.notify();
                                     }))
                                     .child("Discard all"),
-                            ),
+                            )),
                     ),
             )
     }
@@ -1069,7 +1106,8 @@ impl PullView {
                         .flex()
                         .items_center()
                         .gap(rpx(8.))
-                        .child(
+                        .child(hit(
+                            "retry-load",
                             Button::new("retry-load")
                                 .size(ButtonSize::Sm)
                                 .variant(ButtonVariant::Ghost)
@@ -1078,15 +1116,16 @@ impl PullView {
                                     cx.listener(|this, _, window, cx| this.start_load(window, cx)),
                                 )
                                 .child("Try again"),
-                        )
-                        .child(
+                        ))
+                        .child(hit(
+                            "open-instead",
                             Button::new("open-instead")
                                 .size(ButtonSize::Sm)
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.open_external(&url, cx)),
                                 )
                                 .child("Open in browser instead"),
-                        ),
+                        )),
                 )
                 .into_any_element();
         }
@@ -1171,25 +1210,28 @@ impl PullView {
         icon: IconName,
         label: &'static str,
         cx: &mut Context<Self>,
-    ) -> Button {
+    ) -> gpui::Div {
         let active = self.verdict == Some(target);
-        Button::new(id)
-            .size(ButtonSize::Sm)
-            .variant(if active {
-                variant
-            } else {
-                ButtonVariant::Ghost
-            })
-            .icon(icon)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.verdict = if this.verdict == Some(target) {
-                    None
+        hit(
+            id,
+            Button::new(id)
+                .size(ButtonSize::Sm)
+                .variant(if active {
+                    variant
                 } else {
-                    Some(target)
-                };
-                cx.notify();
-            }))
-            .child(label)
+                    ButtonVariant::Ghost
+                })
+                .icon(icon)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.verdict = if this.verdict == Some(target) {
+                        None
+                    } else {
+                        Some(target)
+                    };
+                    cx.notify();
+                }))
+                .child(label),
+        )
     }
 
     fn composer(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1211,6 +1253,20 @@ impl PullView {
             .border_t_1()
             .border_color(colors.border)
             .p(rpx(12.))
+            // The TSX took Ctrl+Enter as well as Cmd+Enter. The input binds Cmd+Enter
+            // (as `TextInputEvent::Submit`); Ctrl+Enter is unbound there, so it
+            // bubbles up to here as a plain key press.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let keystroke = &event.keystroke;
+                if keystroke.key == "enter"
+                    && keystroke.modifiers.control
+                    && !keystroke.modifiers.platform
+                    && this.can_submit(cx)
+                {
+                    this.submit(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .child(
                 div()
                     .w_full()
@@ -1229,7 +1285,7 @@ impl PullView {
                         row.child(
                             Badge::new()
                                 .tone(BadgeTone::Info)
-                                .child(format!("{} pending", plural(self.drafts.len(), "comment"))),
+                                .child(pending_label(self.drafts.len())),
                         )
                     })
                     .child(self.verdict_button(
@@ -1255,7 +1311,8 @@ impl PullView {
                             .text_color(colors.muted_foreground)
                             .child("⌘↵"),
                     )
-                    .child(
+                    .child(hit(
+                        "submit-review",
                         Button::new("submit-review")
                             .variant(ButtonVariant::Default)
                             .size(ButtonSize::Sm)
@@ -1264,7 +1321,7 @@ impl PullView {
                             .disabled(!can_submit)
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
                             .child(label),
-                    ),
+                    )),
             )
     }
 
@@ -1300,7 +1357,8 @@ impl PullView {
                         item.provider.label()
                     )),
             )
-            .footer(
+            .footer(hit(
+                "read-new-diff",
                 Button::new("read-new-diff")
                     .variant(ButtonVariant::Secondary)
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1312,8 +1370,9 @@ impl PullView {
                         cx.notify();
                     }))
                     .child("Read the new diff first"),
-            )
-            .footer(
+            ))
+            .footer(hit(
+                "submit-anyway",
                 Button::new("submit-anyway")
                     .variant(ButtonVariant::Default)
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1321,7 +1380,7 @@ impl PullView {
                         this.send(window, cx);
                     }))
                     .child(format!("Submit {}", plural(count, "comment"))),
-            )
+            ))
     }
 
     fn discard_dialog(
@@ -1351,7 +1410,8 @@ impl PullView {
                     item.provider.label()
                 )),
         )
-        .footer(
+        .footer(hit(
+            "discard-cancel",
             Button::new("discard-cancel")
                 .variant(ButtonVariant::Ghost)
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1359,8 +1419,9 @@ impl PullView {
                     cx.notify();
                 }))
                 .child("Cancel"),
-        )
-        .footer(
+        ))
+        .footer(hit(
+            "discard-confirm",
             Button::new("discard-confirm")
                 .variant(ButtonVariant::Danger)
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1374,12 +1435,34 @@ impl PullView {
                     cx.notify();
                 }))
                 .child("Discard them"),
-        )
+        ))
     }
 }
 
+/// Lays a dialog over the whole window rather than over this pane.
+///
+/// The dialog's scrim is `absolute` inside whatever parent holds it, and this view sits
+/// to the right of the sidebar, so left alone the scrim would stop at the sidebar's edge
+/// and leave the deck clickable while a modal is open. The React dialog was `fixed
+/// inset-0`; an anchored layer at the window's origin, sized to the window, is the same
+/// thing here.
+fn window_wide(dialog: impl IntoElement, window: &Window) -> impl IntoElement {
+    let viewport = window.viewport_size();
+    anchored()
+        .anchor(Corner::TopLeft)
+        .position(point(px(0.), px(0.)))
+        .child(
+            div()
+                .relative()
+                .w(viewport.width)
+                .h(viewport.height)
+                .debug_selector(|| "pull-dialog-layer".into())
+                .child(dialog),
+        )
+}
+
 impl Render for PullView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
 
         // The drafts are the store's, and the diff adds to them without telling this view,
@@ -1425,8 +1508,946 @@ impl Render for PullView {
             .children(banner)
             .child(div().flex_1().min_h_0().relative().child(content))
             .child(composer)
-            .children(push_dialog)
-            .children(discard_dialog)
+            .children(push_dialog.map(|dialog| window_wide(dialog, window)))
+            .children(discard_dialog.map(|dialog| window_wide(dialog, window)))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+    use futures::future::LocalBoxFuture;
+    use gpui::{
+        Bounds, Context, Entity, IntoElement, Modifiers, Pixels, Render, TestAppContext,
+        VisualTestContext, Window, div, px,
+    };
+    use reviewdeck_core::demo::DEMO_ITEMS;
+    use reviewdeck_core::drafts::NewDraft;
+    use reviewdeck_core::http::{Http, Method, MockResponse};
+    use reviewdeck_core::model::{
+        CheckRun, CheckStatus, CheckSummary, MyReviewState, NewAccount, ProviderKind, make_item_id,
+    };
+    use reviewdeck_core::store::{MemoryTokens, TokenStore, Vault};
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::state::{AppDeps, Remote};
+    use crate::ui::theme::Theme;
+
+    thread_local! {
+        pub(super) static TOASTS: RefCell<Vec<(ToastKind, String)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn toasts() -> Vec<(ToastKind, String)> {
+        TOASTS.with(|toasts| toasts.borrow().clone())
+    }
+
+    fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    const NUMBER: u64 = 7;
+
+    /// The host the mock transport plays: GitHub, with a pull request whose head, files and
+    /// conversation the test can change, and a record of every write that reached it.
+    struct Server {
+        head: Mutex<String>,
+        comments: Mutex<Vec<Value>>,
+        detail_fails: AtomicBool,
+        review_status: Mutex<u16>,
+        writes: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl Server {
+        fn new() -> Arc<Server> {
+            Arc::new(Server {
+                head: Mutex::new("h1".into()),
+                comments: Mutex::new(vec![json!({
+                    "id": 1,
+                    "user": { "login": "mnovotna", "avatar_url": "" },
+                    "body": "Looks good overall.",
+                    "created_at": "2026-08-01T10:00:00Z",
+                })]),
+                detail_fails: AtomicBool::new(false),
+                review_status: Mutex::new(200),
+                writes: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn http(self: &Arc<Server>) -> Http {
+            let server = self.clone();
+            Http::mock(move |request| {
+                let url = request.url.as_str();
+                if url.ends_with("/graphql") {
+                    // The REST fallback is what the conversation is read from.
+                    return MockResponse::new(500, Vec::new());
+                }
+                if request.method == Method::Post {
+                    locked(&server.writes)
+                        .push((url.to_string(), request.json_body().unwrap_or(Value::Null)));
+                    let status = if url.ends_with("/reviews") {
+                        *locked(&server.review_status)
+                    } else {
+                        201
+                    };
+                    return MockResponse::json(status, &json!({}));
+                }
+                if url.ends_with(&format!("/pulls/{NUMBER}")) {
+                    if server.detail_fails.load(Ordering::SeqCst) {
+                        return MockResponse::new(500, Vec::new());
+                    }
+                    return MockResponse::json(
+                        200,
+                        &json!({
+                            "body": "Replaces the **palette**.",
+                            "head": { "sha": locked(&server.head).clone() },
+                            "base": { "sha": "b1" },
+                            "additions": 1, "deletions": 0, "changed_files": 1,
+                        }),
+                    );
+                }
+                if url.contains(&format!("/pulls/{NUMBER}/files")) {
+                    return MockResponse::json(
+                        200,
+                        &json!([{
+                            "filename": "src/a.rs", "status": "modified",
+                            "additions": 1, "deletions": 0,
+                            "patch": "@@ -1,1 +1,2 @@\n a\n+b",
+                        }]),
+                    );
+                }
+                if url.contains(&format!("/issues/{NUMBER}/comments")) {
+                    return MockResponse::json(
+                        200,
+                        &Value::Array(locked(&server.comments).clone()),
+                    );
+                }
+                MockResponse::json(200, &json!([]))
+            })
+        }
+
+        fn writes_to(&self, suffix: &str) -> Vec<Value> {
+            locked(&self.writes)
+                .iter()
+                .filter(|(url, _)| url.ends_with(suffix))
+                .map(|(_, body)| body.clone())
+                .collect()
+        }
+
+        fn no_writes(&self) -> bool {
+            locked(&self.writes).is_empty()
+        }
+    }
+
+    /// The deck's hosts: the item list is scripted, everything else is the real adapters
+    /// over the mock transport, except a submission the test wants to fail its own way.
+    struct Remotes {
+        items: Mutex<Vec<ReviewItem>>,
+        real: crate::state::ProviderRemote,
+        submit: Mutex<Option<reviewdeck_core::Result<()>>>,
+    }
+
+    impl Remote for Remotes {
+        fn list_review_requests(
+            &self,
+            _: reviewdeck_core::providers::Session,
+        ) -> LocalBoxFuture<'static, reviewdeck_core::Result<Vec<ReviewItem>>> {
+            let items = locked(&self.items).clone();
+            Box::pin(async move { Ok(items) })
+        }
+
+        fn refresh_checks(
+            &self,
+            session: reviewdeck_core::providers::Session,
+            item: ReviewItem,
+        ) -> LocalBoxFuture<'static, reviewdeck_core::Result<CheckSummary>> {
+            self.real.refresh_checks(session, item)
+        }
+
+        fn submit_review(
+            &self,
+            session: reviewdeck_core::providers::Session,
+            item: ReviewItem,
+            verdict: ReviewVerdict,
+            body: String,
+            drafts: Vec<DraftComment>,
+        ) -> LocalBoxFuture<'static, reviewdeck_core::Result<()>> {
+            if let Some(outcome) = locked(&self.submit).clone() {
+                return Box::pin(async move { outcome });
+            }
+            self.real
+                .submit_review(session, item, verdict, body, drafts)
+        }
+    }
+
+    struct Rig {
+        state: Entity<AppState>,
+        server: Arc<Server>,
+        remotes: Arc<Remotes>,
+        item: ReviewItem,
+        clock: Arc<AtomicI64>,
+    }
+
+    static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn rig(cx: &mut TestAppContext) -> Rig {
+        let dir = std::env::temp_dir().join(format!(
+            "reviewdeck-pull-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tokens: Arc<dyn TokenStore> = Arc::new(MemoryTokens::new());
+        let vault = Arc::new(Vault::open_at(dir.join("reviewdeck.json"), tokens));
+        let account = vault
+            .add_account(
+                NewAccount {
+                    kind: ProviderKind::Github,
+                    label: "Work".into(),
+                    base_url: "https://api.github.com".into(),
+                    web_url: "https://github.com".into(),
+                    username: "octocat".into(),
+                    display_name: "Octo Cat".into(),
+                    avatar_url: String::new(),
+                    agent_command: None,
+                },
+                "ghp_test",
+            )
+            .expect("the fixture vault takes an account");
+
+        let mut item = DEMO_ITEMS[0].clone();
+        item.account_id = account.id.clone();
+        item.provider = ProviderKind::Github;
+        item.repo_key = "acme/tokens".into();
+        item.repo = "acme/tokens".into();
+        item.number = NUMBER;
+        item.id = make_item_id(&account.id, &item.repo_key, NUMBER);
+        item.my_review_state = MyReviewState::Pending;
+        item.checks = CheckSummary {
+            status: CheckStatus::Passed,
+            total: 1,
+            passed: 1,
+            failed: 0,
+            running: 0,
+            runs: vec![CheckRun {
+                id: "c1".into(),
+                name: "build".into(),
+                status: CheckStatus::Passed,
+                description: None,
+                url: None,
+            }],
+        };
+
+        let server = Server::new();
+        let http = server.http();
+        let remotes = Arc::new(Remotes {
+            items: Mutex::new(vec![item.clone()]),
+            real: crate::state::ProviderRemote::new(http.clone()),
+            submit: Mutex::new(None),
+        });
+        let clock = Arc::new(AtomicI64::new(1_780_000_000_000));
+        let ticking = clock.clone();
+        let state = cx.new(|cx| {
+            AppState::new(
+                AppDeps {
+                    http,
+                    vault,
+                    remote: Some(remotes.clone()),
+                    demo: false,
+                    clock: Some(Box::new(move || ticking.load(Ordering::SeqCst))),
+                    notify: None,
+                    tray: None,
+                },
+                cx,
+            )
+        });
+        cx.update(|cx| {
+            cx.set_global(GlobalState(state.clone()));
+            cx.set_global(Theme::new(false));
+            crate::ui::components::bind_keys(cx);
+        });
+        let task = state.update(cx, |state, cx| state.refresh(cx));
+        cx.executor().block_test(task).expect("the deck syncs");
+        TOASTS.with(|toasts| toasts.borrow_mut().clear());
+        Rig {
+            state,
+            server,
+            remotes,
+            item,
+            clock,
+        }
+    }
+
+    /// A sidebar and, beside it, the pull request - the shape the app view gives it.
+    struct Host {
+        view: Entity<PullView>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .child(
+                    div()
+                        .w(px(200.))
+                        .h_full()
+                        .debug_selector(|| "sidebar".into()),
+                )
+                .child(div().flex_1().min_w_0().child(self.view.clone()))
+        }
+    }
+
+    fn open<'a>(
+        cx: &'a mut TestAppContext,
+        rig: &Rig,
+    ) -> (Entity<PullView>, &'a mut VisualTestContext) {
+        let item_id = rig.item.id.clone();
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| PullView::new(item_id, window, cx));
+            Host { view }
+        });
+        cx.run_until_parked();
+        let view = host.read_with(cx, |host, _| host.view.clone());
+        (view, cx)
+    }
+
+    fn click(cx: &mut VisualTestContext, selector: &'static str) {
+        let bounds = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is not on screen"));
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    fn on_screen(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+        cx.debug_bounds(selector).is_some()
+    }
+
+    fn type_into_composer(view: &Entity<PullView>, cx: &mut VisualTestContext, text: &str) {
+        let body = view.read_with(cx, |view, _| view.body.clone());
+        cx.update(|window, cx| body.read(cx).focus(window));
+        cx.simulate_input(text);
+        cx.run_until_parked();
+    }
+
+    fn draft(rig: &Rig, cx: &mut VisualTestContext, head: &str, body: &str) -> DraftComment {
+        let item_id = rig.item.id.clone();
+        let body = body.to_string();
+        let head = head.to_string();
+        let drafts = rig
+            .state
+            .update(cx, |state, cx| {
+                state.add_draft(
+                    NewDraft {
+                        item_id,
+                        body,
+                        path: "src/a.rs".into(),
+                        new_line: Some(2),
+                        old_line: None,
+                        range: None,
+                        refs: DiffRefs {
+                            base_sha: Some("b1".into()),
+                            start_sha: None,
+                            head_sha: Some(head),
+                        },
+                    },
+                    cx,
+                )
+            })
+            .expect("the draft is added");
+        cx.run_until_parked();
+        drafts.last().cloned().expect("a draft exists")
+    }
+
+    // ----- pure helpers ---------------------------------------------------------
+
+    #[test]
+    fn the_pending_badge_puts_the_count_before_pending() {
+        assert_eq!(pending_label(1), "1 pending comment");
+        assert_eq!(pending_label(3), "3 pending comments");
+    }
+
+    #[test]
+    fn the_composer_words_follow_the_verdict_then_the_drafts() {
+        use ReviewVerdict::*;
+        assert_eq!(
+            placeholder_for(Some(Approve), true),
+            "Optional note with your approval…"
+        );
+        assert_eq!(
+            placeholder_for(Some(RequestChanges), false),
+            "What needs to change?"
+        );
+        assert_eq!(
+            placeholder_for(None, true),
+            "Optional summary for your review…"
+        );
+        assert_eq!(
+            placeholder_for(None, false),
+            "Leave a comment on this pull request…"
+        );
+        assert_eq!(submit_label(Some(Approve), true), "Approve");
+        assert_eq!(submit_label(Some(RequestChanges), false), "Request changes");
+        assert_eq!(submit_label(None, true), "Submit review");
+        assert_eq!(submit_label(None, false), "Comment");
+    }
+
+    // ----- loading --------------------------------------------------------------
+
+    #[gpui::test]
+    fn the_pull_request_loads_with_its_counts_and_conversation(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        view.read_with(cx, |view, _| {
+            assert!(view.loaded && !view.loading && view.error.is_none());
+            assert_eq!(view.files.len(), 1);
+            assert_eq!(view.description, "Replaces the **palette**.");
+            assert!(view.description_view.is_some());
+            // The issue comment has no file or line, so it belongs to the conversation.
+            assert_eq!(view.conversation.len(), 1);
+            assert!(view.inline.is_empty());
+            assert_eq!(view.tab, Tab::Diff);
+        });
+        assert!(on_screen(cx, "tab-diff") && on_screen(cx, "tab-checks"));
+    }
+
+    #[gpui::test]
+    fn a_failed_load_offers_retry_and_opening_in_the_browser(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        rig.server.detail_fails.store(true, Ordering::SeqCst);
+        let (view, cx) = open(cx, &rig);
+        view.read_with(cx, |view, _| {
+            assert!(!view.loaded && !view.loading);
+            assert!(view.error.is_some());
+        });
+        assert!(on_screen(cx, "retry-load") && on_screen(cx, "open-instead"));
+
+        click(cx, "open-instead");
+        assert_eq!(cx.opened_url().as_deref(), Some(rig.item.url.as_str()));
+
+        rig.server.detail_fails.store(false, Ordering::SeqCst);
+        click(cx, "retry-load");
+        view.read_with(cx, |view, _| {
+            assert!(view.loaded && view.error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn the_tabs_switch_and_the_mode_toggle_belongs_to_files(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        click(cx, "tab-checks");
+        view.read_with(cx, |view, _| assert_eq!(view.tab, Tab::Checks));
+        click(cx, "tab-conversation");
+        view.read_with(cx, |view, _| assert_eq!(view.tab, Tab::Conversation));
+        click(cx, "tab-diff");
+        assert!(on_screen(cx, "diff-split") && on_screen(cx, "diff-unified"));
+    }
+
+    #[gpui::test]
+    fn the_diff_layout_toggle_is_saved_in_the_settings(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (_, cx) = open(cx, &rig);
+        click(cx, "diff-unified");
+        let mode = rig
+            .state
+            .read_with(cx, |state, _| state.settings().diff_view);
+        assert_eq!(mode, DiffViewMode::Unified);
+        click(cx, "diff-split");
+        let mode = rig
+            .state
+            .read_with(cx, |state, _| state.settings().diff_view);
+        assert_eq!(mode, DiffViewMode::Split);
+    }
+
+    // ----- the conversation poll ------------------------------------------------
+
+    #[gpui::test]
+    fn a_later_sync_rereads_the_conversation_and_an_unchanged_one_leaves_it(
+        cx: &mut TestAppContext,
+    ) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        let first_card = view.read_with(cx, |view, _| view.cards[0].card.entity_id());
+
+        // A sync that finds the same conversation: nothing is rebuilt.
+        rig.clock.fetch_add(60_000, Ordering::SeqCst);
+        let task = rig.state.update(cx, |state, cx| state.refresh(cx));
+        cx.executor().block_test(task).expect("the deck syncs");
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.conversation.len(), 1);
+            assert_eq!(view.cards[0].card.entity_id(), first_card);
+        });
+
+        // A reply lands, and the next sync brings it in without touching the diff.
+        locked(&rig.server.comments).push(json!({
+            "id": 2,
+            "user": { "login": "hkramer", "avatar_url": "" },
+            "body": "One more thing.",
+            "created_at": "2026-08-01T11:00:00Z",
+        }));
+        rig.clock.fetch_add(60_000, Ordering::SeqCst);
+        let task = rig.state.update(cx, |state, cx| state.refresh(cx));
+        cx.executor().block_test(task).expect("the deck syncs");
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.conversation.len(), 2);
+            assert_eq!(view.files.len(), 1);
+            // The card of a thread that was already there is kept.
+            assert!(
+                view.cards
+                    .iter()
+                    .any(|entry| entry.card.entity_id() == first_card)
+            );
+        });
+    }
+
+    // ----- the header actions ---------------------------------------------------
+
+    #[gpui::test]
+    fn copying_the_prompt_puts_it_on_the_clipboard_and_says_so(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (_, cx) = open(cx, &rig);
+        click(cx, "copy-agent-prompt");
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .expect("the clipboard holds the command");
+        assert!(copied.contains(&rig.item.url) || copied.contains("acme/tokens"));
+        assert_eq!(
+            toasts(),
+            vec![(
+                ToastKind::Ok,
+                "Claude prompt copied - paste it in your terminal.".to_string()
+            )]
+        );
+    }
+
+    #[gpui::test]
+    fn open_goes_to_the_pull_requests_page(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (_, cx) = open(cx, &rig);
+        click(cx, "open-in-browser");
+        assert_eq!(cx.opened_url().as_deref(), Some(rig.item.url.as_str()));
+    }
+
+    // ----- the composer ---------------------------------------------------------
+
+    #[gpui::test]
+    fn an_empty_composer_cannot_be_submitted(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        view.read_with(cx, |view, cx| assert!(!view.can_submit(cx)));
+        click(cx, "submit-review");
+        assert!(rig.server.no_writes());
+        assert!(toasts().is_empty());
+    }
+
+    #[gpui::test]
+    fn a_comment_alone_is_posted_as_a_comment(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        type_into_composer(&view, cx, "  Nice work  ");
+        view.read_with(cx, |view, cx| assert!(view.can_submit(cx)));
+        click(cx, "submit-review");
+
+        assert_eq!(
+            rig.server.writes_to(&format!("/issues/{NUMBER}/comments")),
+            vec![json!({ "body": "Nice work" })]
+        );
+        assert!(rig.server.writes_to("/reviews").is_empty());
+        assert_eq!(
+            toasts(),
+            vec![(ToastKind::Ok, "Comment posted.".to_string())]
+        );
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.body.read(cx).text(), "");
+            assert!(!view.submitting);
+        });
+    }
+
+    #[gpui::test]
+    fn approving_needs_no_words_and_resets_the_verdict(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        click(cx, "verdict-approve");
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.verdict, Some(ReviewVerdict::Approve));
+            assert!(view.can_submit(cx));
+        });
+        click(cx, "submit-review");
+
+        assert_eq!(
+            rig.server.writes_to("/reviews"),
+            vec![json!({ "event": "APPROVE" })]
+        );
+        assert_eq!(toasts(), vec![(ToastKind::Ok, "Approved.".to_string())]);
+        view.read_with(cx, |view, _| assert_eq!(view.verdict, None));
+    }
+
+    #[gpui::test]
+    fn the_verdict_buttons_toggle_and_exclude_each_other(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        click(cx, "verdict-approve");
+        click(cx, "verdict-approve");
+        view.read_with(cx, |view, _| assert_eq!(view.verdict, None));
+        click(cx, "verdict-approve");
+        click(cx, "verdict-request-changes");
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.verdict, Some(ReviewVerdict::RequestChanges));
+        });
+    }
+
+    #[gpui::test]
+    fn requesting_changes_needs_words(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        click(cx, "verdict-request-changes");
+        view.read_with(cx, |view, cx| assert!(!view.can_submit(cx)));
+        click(cx, "submit-review");
+        assert!(rig.server.no_writes());
+
+        type_into_composer(&view, cx, "Rename it");
+        click(cx, "submit-review");
+        assert_eq!(
+            rig.server.writes_to("/reviews"),
+            vec![json!({ "event": "REQUEST_CHANGES", "body": "Rename it" })]
+        );
+        assert_eq!(
+            toasts(),
+            vec![(ToastKind::Ok, "Changes requested.".to_string())]
+        );
+    }
+
+    #[gpui::test]
+    fn drafts_go_out_together_as_a_review_with_the_summary(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        draft(&rig, cx, "h1", "Why this?");
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.drafts.len(), 1);
+            assert!(view.can_submit(cx), "a draft alone is enough to submit");
+        });
+        type_into_composer(&view, cx, "Summary");
+        click(cx, "submit-review");
+
+        let reviews = rig.server.writes_to("/reviews");
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0]["event"], "COMMENT");
+        assert_eq!(reviews[0]["body"], "Summary");
+        assert_eq!(reviews[0]["commit_id"], "h1");
+        assert_eq!(reviews[0]["comments"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            toasts(),
+            vec![(ToastKind::Ok, "Review submitted.".to_string())]
+        );
+        view.read_with(cx, |view, _| assert!(view.drafts.is_empty()));
+    }
+
+    #[gpui::test]
+    fn cmd_enter_and_ctrl_enter_both_submit(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        let comments = format!("/issues/{NUMBER}/comments");
+        type_into_composer(&view, cx, "First");
+        cx.simulate_keystrokes("cmd-enter");
+        cx.run_until_parked();
+        assert_eq!(rig.server.writes_to(&comments).len(), 1);
+
+        type_into_composer(&view, cx, "Second");
+        cx.simulate_keystrokes("ctrl-enter");
+        cx.run_until_parked();
+        assert_eq!(rig.server.writes_to(&comments).len(), 2);
+
+        // Nothing to send: the shortcut does nothing, as the button is disabled.
+        cx.simulate_keystrokes("ctrl-enter");
+        cx.run_until_parked();
+        assert_eq!(rig.server.writes_to(&comments).len(), 2);
+    }
+
+    #[gpui::test]
+    fn a_rejected_review_keeps_the_words_the_drafts_and_the_verdict(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        *locked(&rig.server.review_status) = 422;
+        let (view, cx) = open(cx, &rig);
+        draft(&rig, cx, "h1", "Why this?");
+        click(cx, "verdict-request-changes");
+        type_into_composer(&view, cx, "Rename it");
+        click(cx, "submit-review");
+
+        let shown = toasts();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].0, ToastKind::Bad);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.drafts.len(), 1);
+            assert_eq!(view.body.read(cx).text(), "Rename it");
+            assert_eq!(view.verdict, Some(ReviewVerdict::RequestChanges));
+            assert!(!view.submitting, "the button is usable again");
+        });
+    }
+
+    #[gpui::test]
+    fn a_partial_submission_says_so_and_shows_what_is_left(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        let first = draft(&rig, cx, "h1", "One");
+        draft(&rig, cx, "h1", "Two");
+        *locked(&rig.remotes.submit) = Some(Err(reviewdeck_core::Error::PartialSubmit {
+            message: "Only 1 of 2 comments was posted.".into(),
+            posted: vec![first.id.clone()],
+        }));
+        click(cx, "submit-review");
+
+        assert_eq!(
+            toasts(),
+            vec![(
+                ToastKind::Bad,
+                "Only 1 of 2 comments was posted.".to_string()
+            )]
+        );
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.drafts.len(), 1, "the one that landed is gone");
+            assert_ne!(view.drafts[0].id, first.id);
+            assert!(!view.submitting);
+        });
+    }
+
+    // ----- the author pushed ----------------------------------------------------
+
+    #[gpui::test]
+    fn a_moved_head_asks_before_anything_is_sent(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        draft(&rig, cx, "h1", "Why this?");
+        *locked(&rig.server.head) = "h2".into();
+        click(cx, "submit-review");
+
+        view.read_with(cx, |view, _| assert!(view.pushed.is_some()));
+        assert!(rig.server.no_writes());
+        assert!(on_screen(cx, "submit-anyway") && on_screen(cx, "read-new-diff"));
+
+        // Sent against the code that was read, not the new head.
+        click(cx, "submit-anyway");
+        let reviews = rig.server.writes_to("/reviews");
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0]["commit_id"], "h1");
+        view.read_with(cx, |view, _| assert!(view.pushed.is_none()));
+    }
+
+    #[gpui::test]
+    fn reading_the_new_diff_first_adopts_it_and_sends_nothing(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        draft(&rig, cx, "h1", "Why this?");
+        *locked(&rig.server.head) = "h2".into();
+        click(cx, "submit-review");
+        click(cx, "read-new-diff");
+
+        assert!(rig.server.no_writes());
+        view.read_with(cx, |view, _| {
+            assert!(view.pushed.is_none());
+            assert_eq!(view.refs.head_sha.as_deref(), Some("h2"));
+            assert_eq!(view.drafts.len(), 1, "the drafts are kept");
+        });
+    }
+
+    #[gpui::test]
+    fn escape_dismisses_the_push_dialog(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        draft(&rig, cx, "h1", "Why this?");
+        *locked(&rig.server.head) = "h2".into();
+        click(cx, "submit-review");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(view.pushed.is_none()));
+        assert!(rig.server.no_writes());
+    }
+
+    #[gpui::test]
+    fn the_scrim_covers_the_whole_window_not_just_the_pane(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (_, cx) = open(cx, &rig);
+        draft(&rig, cx, "h1", "Why this?");
+        *locked(&rig.server.head) = "h2".into();
+        click(cx, "submit-review");
+
+        let layer: Bounds<Pixels> = cx
+            .debug_bounds("pull-dialog-layer")
+            .expect("a dialog layer");
+        let sidebar = cx.debug_bounds("sidebar").expect("the sidebar");
+        assert_eq!(layer.origin, gpui::point(px(0.), px(0.)));
+        assert!(layer.contains(&sidebar.origin) && layer.contains(&sidebar.bottom_right()));
+        let window = cx.update(|window, _| window.viewport_size());
+        assert_eq!(layer.size, window);
+    }
+
+    // ----- a review sent from elsewhere -----------------------------------------
+
+    /// The review goes out in a browser, and the next sync finds the item approved.
+    fn diverge(rig: &Rig, cx: &mut VisualTestContext) {
+        for item in locked(&rig.remotes.items).iter_mut() {
+            item.my_review_state = MyReviewState::Approved;
+        }
+        rig.clock.fetch_add(60_000, Ordering::SeqCst);
+        let task = rig.state.update(cx, |state, cx| state.refresh(cx));
+        cx.executor().block_test(task).expect("the deck syncs");
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn the_banner_appears_for_drafts_left_behind_and_keep_dismisses_it(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        assert!(!on_screen(cx, "keep-drafts"));
+        draft(&rig, cx, "h1", "Why this?");
+        assert!(
+            !on_screen(cx, "keep-drafts"),
+            "nothing went out elsewhere yet"
+        );
+        diverge(&rig, cx);
+        view.read_with(cx, |view, _| assert!(view.diverged));
+        assert!(on_screen(cx, "keep-drafts") && on_screen(cx, "discard-all"));
+
+        click(cx, "keep-drafts");
+        view.read_with(cx, |view, _| {
+            assert!(!view.diverged);
+            assert_eq!(view.drafts.len(), 1, "keeping loses nothing");
+        });
+    }
+
+    #[gpui::test]
+    fn discarding_asks_first_and_cancel_loses_nothing(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        draft(&rig, cx, "h1", "Why this?");
+        diverge(&rig, cx);
+
+        click(cx, "discard-all");
+        view.read_with(cx, |view, _| assert!(view.confirm_discard));
+        click(cx, "discard-cancel");
+        view.read_with(cx, |view, _| {
+            assert!(!view.confirm_discard);
+            assert_eq!(view.drafts.len(), 1);
+        });
+
+        click(cx, "discard-all");
+        click(cx, "discard-confirm");
+        view.read_with(cx, |view, _| {
+            assert!(view.drafts.is_empty() && !view.diverged && !view.confirm_discard);
+        });
+        assert_eq!(
+            toasts(),
+            vec![(ToastKind::Info, "Drafts discarded.".to_string())]
+        );
+        assert!(
+            rig.state
+                .read_with(cx, |state, _| state.drafts(&rig.item.id).is_empty())
+        );
+    }
+
+    #[gpui::test]
+    fn escape_dismisses_the_discard_dialog(cx: &mut TestAppContext) {
+        let rig = rig(cx);
+        let (view, cx) = open(cx, &rig);
+        draft(&rig, cx, "h1", "Why this?");
+        diverge(&rig, cx);
+        click(cx, "discard-all");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(!view.confirm_discard);
+            assert_eq!(view.drafts.len(), 1);
+        });
+    }
+
+    // ----- the checks panel and the thread split --------------------------------
+
+    fn summary(status: CheckStatus, passed: u32, failed: u32, running: u32) -> CheckSummary {
+        CheckSummary {
+            status,
+            total: passed + failed + running,
+            passed,
+            failed,
+            running,
+            runs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_checks_headline_counts_what_matters_for_the_status() {
+        use crate::ui::checks_panel::headline;
+        assert_eq!(
+            headline(&summary(CheckStatus::Running, 1, 0, 1)),
+            "1 check still running"
+        );
+        assert_eq!(
+            headline(&summary(CheckStatus::Running, 0, 0, 3)),
+            "3 checks still running"
+        );
+        assert_eq!(
+            headline(&summary(CheckStatus::Failed, 1, 2, 0)),
+            "2 checks failing"
+        );
+        assert_eq!(
+            headline(&summary(CheckStatus::Failed, 0, 1, 0)),
+            "1 check failing"
+        );
+        assert_eq!(
+            headline(&summary(CheckStatus::Passed, 2, 0, 0)),
+            "All checks passed"
+        );
+        assert_eq!(
+            headline(&summary(CheckStatus::Unknown, 0, 0, 0)),
+            "Check status unknown"
+        );
+    }
+
+    #[test]
+    fn threads_without_a_file_a_line_or_a_file_in_the_diff_belong_to_the_conversation() {
+        let thread = |id: &str, path: Option<&str>, line: Option<u32>| CommentThread {
+            id: id.into(),
+            comments: Vec::new(),
+            resolved: false,
+            outdated: false,
+            path: path.map(Into::into),
+            line,
+            start_line: None,
+            side: None,
+            can_reply: true,
+            can_resolve: true,
+        };
+        let file = DiffFile {
+            path: "src/a.rs".into(),
+            old_path: "src/a.rs".into(),
+            status: reviewdeck_core::model::FileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            binary: false,
+            patch: None,
+        };
+        let (inline, rest) = split_threads(
+            &[
+                thread("anchored", Some("src/a.rs"), Some(2)),
+                thread("outdated", Some("src/a.rs"), None),
+                thread("elsewhere", Some("src/b.rs"), Some(1)),
+                thread("general", None, None),
+            ],
+            &[file],
+        );
+        assert_eq!(
+            inline.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            ["anchored"]
+        );
+        assert_eq!(
+            rest.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            ["outdated", "elsewhere", "general"]
+        );
     }
 }

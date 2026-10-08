@@ -4468,6 +4468,7 @@ dependencies = [
  "gpui",
  "objc",
  "reviewdeck-core",
+ "serde_json",
 ]
 
 [[package]]

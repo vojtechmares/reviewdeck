@@ -44,7 +44,7 @@ fn plural(count: u32, singular: &str) -> String {
 }
 
 /// The headline over the list.
-fn headline(checks: &CheckSummary) -> String {
+pub(crate) fn headline(checks: &CheckSummary) -> String {
     match checks.status {
         CheckStatus::Running => format!("{} still running", plural(checks.running, "check")),
         CheckStatus::Failed => format!("{} failing", plural(checks.failed, "check")),

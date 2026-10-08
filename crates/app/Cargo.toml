@@ -21,6 +21,8 @@ runtime-shaders = ["gpui/runtime_shaders"]
 [dev-dependencies]
 # `#[gpui::test]` and TestAppContext, which drive the engine without a window.
 gpui = { workspace = true, features = ["font-kit", "test-support"] }
+# JSON bodies for the mock host in the view tests.
+serde_json.workspace = true
 
 [dependencies]
 # `font-kit` is gpui's macOS text system (CoreText). Without it gpui falls back to
