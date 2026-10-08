@@ -48,10 +48,10 @@ actions!(app_view, [SelectNext, SelectPrev, FocusSearch]);
 /// search field. Cmd-R is the menu's Refresh action, bound in main.rs.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("j", SelectNext, Some("AppView && !TextInput")),
-        KeyBinding::new("down", SelectNext, Some("AppView && !TextInput")),
-        KeyBinding::new("k", SelectPrev, Some("AppView && !TextInput")),
-        KeyBinding::new("up", SelectPrev, Some("AppView && !TextInput")),
+        KeyBinding::new("j", SelectNext, Some("AppView && !TextInput && !Select")),
+        KeyBinding::new("down", SelectNext, Some("AppView && !TextInput && !Select")),
+        KeyBinding::new("k", SelectPrev, Some("AppView && !TextInput && !Select")),
+        KeyBinding::new("up", SelectPrev, Some("AppView && !TextInput && !Select")),
         KeyBinding::new("cmd-f", FocusSearch, Some("AppView")),
     ]);
 }
@@ -294,10 +294,17 @@ impl AppView {
         let toasts = cx.new(|_| ToastStack::new());
         cx.set_global(ToastHost(toasts.clone()));
 
-        let search =
-            cx.new(|cx| TextInput::new(cx).placeholder("Filter by title, repo or author…"));
-        let account_select =
-            cx.new(|cx| Select::new(vec![SelectOption::new("all", "All accounts")], "all", cx));
+        // `h-8 pl-7.5`: room on the left for the magnifier.
+        let search = cx.new(|cx| {
+            TextInput::new(cx)
+                .placeholder("Filter by title, repo or author…")
+                .height(32.)
+                .padding_left(30.)
+        });
+        // `h-7 text-[11.5px]`, the compact select.
+        let account_select = cx.new(|cx| {
+            Select::new(vec![SelectOption::new("all", "All accounts")], "all", cx).compact()
+        });
         let checks_select = cx.new(|cx| {
             Select::new(
                 vec![
@@ -310,6 +317,7 @@ impl AppView {
                 "all",
                 cx,
             )
+            .compact()
         });
         let sync_label = cx.new(SyncLabel::new);
 
@@ -852,14 +860,13 @@ impl AppView {
                 div()
                     .relative()
                     .child(self.search.clone())
-                    // The magnifier sits at the right: the text field's padding is fixed,
-                    // so it cannot make room for one on the left as `pl-7.5` does.
+                    // The magnifier sits in the field's left padding.
                     .child(
                         div()
                             .absolute()
                             .top(rpx(0.))
                             .bottom(rpx(0.))
-                            .right(rpx(12.))
+                            .left(rpx(10.))
                             .flex()
                             .items_center()
                             .child(
@@ -2035,7 +2042,9 @@ mod tests {
         cx.simulate_keystrokes("j j");
         assert_eq!(selected(&view, cx), Some(ids[2].clone()));
 
-        cx.simulate_keystrokes("tab tab tab");
+        // The header's four buttons come first, as native buttons did in the DOM; then
+        // the first card, its pill, and the second card.
+        cx.simulate_keystrokes("tab tab tab tab tab tab tab");
         enter(cx);
         assert_eq!(selected(&view, cx), Some(ids[1].clone()), "the second card");
 

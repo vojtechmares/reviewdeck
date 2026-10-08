@@ -28,7 +28,7 @@ use crate::ui::components::avatar::Avatar;
 use crate::ui::components::button::{Button, ButtonVariant};
 use crate::ui::components::dialog::Dialog;
 use crate::ui::components::glass::GlassExt;
-use crate::ui::components::input::{TextInput, TextInputEvent, label};
+use crate::ui::components::input::{TextInput, label};
 use crate::ui::components::toast::ToastKind;
 use crate::ui::icons::{Icon, IconName};
 use crate::ui::theme::{ActiveTheme, UI_FONT, mono_font, radius, rpx};
@@ -305,19 +305,12 @@ impl AccountsDialog {
         let agent_command = text_field(DEFAULT_AGENT_COMMAND, cx);
         let token = cx.new(SecureInput::new);
 
+        // Escape inside a field reports `Cancel` and travels on to the Dialog, which closes
+        // - the TSX dialog closed on Escape wherever the focus was.
         let mut subscriptions = vec![cx.observe(&state, |this, _, cx| {
             this.reload(cx);
             cx.notify();
         })];
-        // Escape inside a field is consumed by the field, so it reports `Cancel`; the TSX
-        // dialog closes on Escape wherever the focus is.
-        for input in [&host, &label, &username, &agent_command] {
-            subscriptions.push(cx.subscribe(input, |_, _, event: &TextInputEvent, cx| {
-                if matches!(event, TextInputEvent::Cancel) {
-                    cx.emit(DismissEvent);
-                }
-            }));
-        }
         // Enter in the token field submits, when there is something to submit.
         subscriptions.push(cx.subscribe(&token, |this, _, event: &SecureEvent, cx| {
             if matches!(event, SecureEvent::Submit) && this.can_save(cx) {

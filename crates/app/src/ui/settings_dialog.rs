@@ -194,8 +194,8 @@ impl SettingsDialog {
                     let command = input.read(cx).text().to_string();
                     this.apply(cx, move |s| s.agent_command = command);
                 }
-                TextInputEvent::Cancel => cx.emit(DismissEvent),
-                TextInputEvent::Submit => {}
+                // Escape travels on to the Dialog, which closes.
+                TextInputEvent::Cancel | TextInputEvent::Submit => {}
             }),
         );
 
