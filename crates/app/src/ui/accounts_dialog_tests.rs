@@ -43,7 +43,7 @@ fn dialog(
 /// Types into the token field, which is not a `TextInput`.
 fn type_token(dialog: &Entity<AccountsDialog>, vcx: &mut VisualTestContext, text: &str) {
     let token = dialog.read_with(vcx, |dialog, _| dialog.token.clone());
-    vcx.update(|window, cx| token.focus_handle(cx).focus(window));
+    vcx.update(|window, cx| token.read(cx).focus(window));
     vcx.simulate_input(text);
 }
 
@@ -54,7 +54,7 @@ fn type_into(vcx: &mut VisualTestContext, field: Entity<TextInput>, text: &str) 
 }
 
 fn token_of(dialog: &Entity<AccountsDialog>, vcx: &VisualTestContext) -> String {
-    dialog.read_with(vcx, |dialog, cx| dialog.token.read(cx).value().to_string())
+    dialog.read_with(vcx, |dialog, cx| dialog.token.read(cx).text().to_string())
 }
 
 fn field_text(vcx: &VisualTestContext, field: &Entity<TextInput>) -> String {
@@ -313,7 +313,7 @@ fn editing_with_a_blank_token_keeps_the_stored_one(cx: &mut TestAppContext) {
     );
     assert_eq!(field_text(vcx, &host), "github.com");
     assert_eq!(field_text(vcx, &label), "Work GitHub");
-    assert_eq!(token.read_with(vcx, |t, _| t.value().to_string()), "");
+    assert_eq!(token.read_with(vcx, |t, _| t.text().to_string()), "");
     // A blank token is allowed when editing.
     assert!(dialog.read_with(vcx, |d, cx| d.can_save(cx)));
 
