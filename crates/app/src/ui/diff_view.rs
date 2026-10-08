@@ -47,7 +47,7 @@ use crate::ui::components::input::{TextInput, TextInputEvent};
 use crate::ui::components::toast::ToastKind;
 use crate::ui::draft_view::DraftCard;
 use crate::ui::icons::{Icon, IconName};
-use crate::ui::theme::{ActiveTheme, MONO_FONT, UI_FONT, packed, radius, rpx};
+use crate::ui::theme::{ActiveTheme, UI_FONT, mono_font, packed, radius, rpx};
 use crate::ui::thread_view::{ThreadCard, ThreadEvent};
 
 /// Files past this many lines start collapsed so opening a big PR stays instant.
@@ -895,7 +895,7 @@ impl DiffView {
             .min_w_0()
             .overflow_hidden()
             .whitespace_nowrap()
-            .font_family(MONO_FONT)
+            .font_family(mono_font())
             .text_size(rpx(CODE_SIZE))
             .line_height(rpx(CODE_LINE))
             .font_weight(FontWeight::MEDIUM);
@@ -948,7 +948,7 @@ impl DiffView {
                     .flex()
                     .flex_none()
                     .gap(rpx(SMALL_SIZE * 0.35))
-                    .font_family(MONO_FONT)
+                    .font_family(mono_font())
                     .text_size(rpx(SMALL_SIZE))
                     .line_height(rpx(SMALL_LINE))
                     .child(
@@ -1000,7 +1000,7 @@ impl DiffView {
             .bg(colors.muted)
             .px(rpx(12.))
             .py(rpx(4.))
-            .font_family(MONO_FONT)
+            .font_family(mono_font())
             .text_size(rpx(SMALL_SIZE))
             .line_height(rpx(SMALL_LINE))
             .text_color(colors.muted_foreground)
@@ -1019,7 +1019,7 @@ impl DiffView {
             .w_full()
             .px(rpx(12.))
             .py(rpx(2.))
-            .font_family(MONO_FONT)
+            .font_family(mono_font())
             .text_size(rpx(SMALL_SIZE))
             .line_height(rpx(SMALL_LINE))
             .italic()
@@ -1051,7 +1051,7 @@ impl DiffView {
             .border_r_1()
             .border_color(colors.border.opacity(0.6))
             .text_right()
-            .font_family(MONO_FONT)
+            .font_family(mono_font())
             .text_size(rpx(SMALL_SIZE))
             .line_height(rpx(SMALL_LINE))
             .text_color(colors.diff_gutter)
@@ -1085,8 +1085,13 @@ impl DiffView {
                 .bg(colors.info)
                 .cursor_pointer()
                 .shadow_sm()
-                .hidden()
-                .group_hover(group.clone(), |style| style.flex())
+                .flex()
+                // Visibility, not `display: none`: gpui works a hover style out once in
+                // prepaint and again in paint, and a display flip between the two paints
+                // children that were never prepainted (a panic). Absolutely positioned,
+                // so taking space while invisible changes nothing.
+                .invisible()
+                .group_hover(group.clone(), |style| style.visible())
                 .hover(|style| style.opacity(0.9))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -1163,7 +1168,7 @@ impl DiffView {
                 div()
                     .relative()
                     .px(rpx(8.))
-                    .font_family(MONO_FONT)
+                    .font_family(mono_font())
                     .text_size(rpx(CODE_SIZE))
                     .line_height(rpx(CODE_LINE))
                     .text_color(colors.foreground)
@@ -1370,7 +1375,7 @@ impl DiffView {
                     .child(heading)
                     .child(
                         div()
-                            .font_family(MONO_FONT)
+                            .font_family(mono_font())
                             .text_size(rpx(SMALL_SIZE))
                             .child(target.path.clone()),
                     ),

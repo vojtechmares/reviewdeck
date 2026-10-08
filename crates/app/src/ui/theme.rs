@@ -27,9 +27,42 @@ pub const BASE_REM: Pixels = px(16.);
 
 /// `--font-sans`: the system UI font, which is what `-apple-system` resolves to.
 pub const UI_FONT: &str = ".SystemUIFont";
-/// `--font-mono`. SF Mono is not installed for apps to use outside Apple's own, so
-/// this is the next name in the stack that is always present.
-pub const MONO_FONT: &str = "Menlo";
+/// `--font-mono`: SF Mono, which the browser reached through `ui-monospace`.
+///
+/// It is the system's monospaced font but not an installed family, so gpui cannot
+/// find it by name: [`load_fonts`] reads it from its file into gpui's own font
+/// source at startup. Menlo - the next name in the CSS stack that is always
+/// installed - stands in if that ever fails, because a code view falling back to the
+/// proportional UI font is far worse than a slightly different monospace.
+pub fn mono_font() -> &'static str {
+    MONO_FAMILY.get().copied().unwrap_or(FALLBACK_MONO)
+}
+
+/// The family SF Mono's file declares.
+const SF_MONO: &str = ".SF NS Mono";
+const SF_MONO_FILE: &str = "/System/Library/Fonts/SFNSMono.ttf";
+const FALLBACK_MONO: &str = "Menlo";
+static MONO_FAMILY: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Makes the fonts the theme names available to gpui. Call once, before the first
+/// window opens.
+pub fn load_fonts(cx: &mut App) {
+    let loaded = std::fs::read(SF_MONO_FILE)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            cx.text_system()
+                .add_fonts(vec![std::borrow::Cow::Owned(bytes)])
+                .map_err(|error| error.to_string())
+        });
+    let family = match loaded {
+        Ok(()) => SF_MONO,
+        Err(error) => {
+            eprintln!("[theme] SF Mono is unavailable ({error}); code falls back to Menlo");
+            FALLBACK_MONO
+        }
+    };
+    let _ = MONO_FAMILY.set(family);
+}
 
 /// `body { font-size: 13.5px }`: the size text takes when nothing says otherwise.
 pub const BASE_TEXT: f32 = 13.5;
