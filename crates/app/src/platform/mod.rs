@@ -9,9 +9,6 @@
 
 // objc 0.2's `msg_send!`/`sel!` expand to `cfg(feature = "cargo-clippy")` checks.
 #![allow(unexpected_cfgs)]
-// The binary only reaches these once main.rs wires the platform layer up; until
-// then every item reads as unused.
-#![allow(dead_code)]
 
 pub mod appearance;
 pub mod instance;

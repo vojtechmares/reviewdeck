@@ -18,6 +18,10 @@ default = []
 # them precompiled is what keeps startup fast.
 runtime-shaders = ["gpui/runtime_shaders"]
 
+[dev-dependencies]
+# `#[gpui::test]` and TestAppContext, which drive the engine without a window.
+gpui = { workspace = true, features = ["font-kit", "test-support"] }
+
 [dependencies]
 # `font-kit` is gpui's macOS text system (CoreText). Without it gpui falls back to
 # a no-op text system and draws no text at all.
