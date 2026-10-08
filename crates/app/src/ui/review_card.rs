@@ -60,7 +60,7 @@ impl ReviewCard {
 }
 
 impl RenderOnce for ReviewCard {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors;
         let item = self.item;
         let selected = self.selected;
@@ -239,9 +239,19 @@ impl RenderOnce for ReviewCard {
                     .child(badges),
             );
 
+        // The TSX card is a `<button>`: a tab stop that Enter and Space activate
+        // (gpui turns those into a click on a focused element). The focus handle
+        // is kept per card, under the card's id, as the list rebuilds cards freely.
+        let focus = window.use_keyed_state(
+            SharedString::from(format!("card-focus-{}", item.id)),
+            cx,
+            |_, cx| cx.focus_handle().tab_stop(true),
+        );
+        let focus = focus.read(cx).clone();
+        let ring = colors.ring;
         let border = colors.border;
         let surface_muted = colors.surface_muted;
-        div()
+        let card = div()
             .id(SharedString::from(format!("card-{}", item.id)))
             .relative()
             .w_full()
@@ -250,6 +260,8 @@ impl RenderOnce for ReviewCard {
             .px(rpx(12.))
             .py(rpx(10.))
             .cursor_pointer()
+            .track_focus(&focus)
+            .focus(move |s| s.border_color(ring))
             .when(selected, |d| {
                 d.border_color(colors.border_strong)
                     .bg(colors.surface_strong)
@@ -269,7 +281,13 @@ impl RenderOnce for ReviewCard {
                     .hover(move |s| s.border_color(border).bg(surface_muted))
             })
             .on_click(move |event, window, cx| on_select(event, window, cx))
-            .child(body)
+            .child(body);
+        #[cfg(test)]
+        let card = card.debug_selector({
+            let id = item.id.clone();
+            move || format!("card:{id}")
+        });
+        card
     }
 }
 

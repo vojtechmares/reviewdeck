@@ -12,9 +12,9 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt, AnyElement, AnyView, App, AppContext, ClickEvent, Context,
     DismissEvent, Entity, FocusHandle, Focusable, Global, InteractiveElement, IntoElement,
-    KeyBinding, ListAlignment, ListState, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Timer, Window,
-    WindowControlArea, actions, div, list, prelude::FluentBuilder, px, relative,
+    KeyBinding, ListAlignment, ListState, MouseButton, MouseDownEvent, ParentElement, Render,
+    SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Timer,
+    Window, actions, div, list, prelude::FluentBuilder, px, relative,
 };
 use reviewdeck_core::model::{
     Account, AccountStatus, CheckStatus, DeckCounts, DeckEmptyState, ReviewItem, Settings,
@@ -22,6 +22,7 @@ use reviewdeck_core::model::{
 };
 use reviewdeck_core::time::{now_ms, relative_time};
 
+use crate::platform::window_drag;
 use crate::state::{AppEvent, AppState, GlobalState};
 use crate::ui::accounts_dialog::AccountsDialog;
 use crate::ui::components::button::{Button, ButtonSize, ButtonVariant, with_alpha};
@@ -29,6 +30,7 @@ use crate::ui::components::input::{TextInput, TextInputEvent};
 use crate::ui::components::scroll::thumb;
 use crate::ui::components::select::{Select, SelectEvent, SelectOption};
 use crate::ui::components::toast::{ToastKind, ToastStack};
+use crate::ui::components::{FocusNext, FocusPrev};
 use crate::ui::icons::{Icon, IconName};
 use crate::ui::pull_view::PullView;
 use crate::ui::review_card::ReviewCard;
@@ -126,6 +128,22 @@ fn plural(count: usize, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
+/// Gives `element` a name the interaction tests can find its bounds by. The wrapper
+/// exists only in test builds; in the app the element is returned as it is.
+#[cfg(test)]
+fn tag(name: impl Into<String>, element: impl IntoElement) -> AnyElement {
+    let name = name.into();
+    div()
+        .debug_selector(move || name.clone())
+        .child(element)
+        .into_any_element()
+}
+
+#[cfg(not(test))]
+fn tag(_name: impl Into<String>, element: impl IntoElement) -> AnyElement {
+    element.into_any_element()
+}
+
 /// The one dialog that is open. One modal at a time, as in the TSX: the schedule
 /// replaces settings rather than stacking on it, so there is only ever one focus trap
 /// and one Escape to answer.
@@ -191,6 +209,17 @@ impl Render for SyncLabel {
             .truncate()
             .text_size(rpx(11.5))
             .text_color(muted);
+        #[cfg(test)]
+        let label = label.debug_selector({
+            let text = if self.syncing {
+                "Syncing".to_string()
+            } else if let Some(at) = &self.last_synced_at {
+                format!("Updated {}", relative_time(at, now_ms()))
+            } else {
+                "Not synced yet".to_string()
+            };
+            move || format!("sync-label:{text}")
+        });
         if self.syncing {
             label
                 .flex()
@@ -252,6 +281,9 @@ pub struct AppView {
     sync_label: Entity<SyncLabel>,
     dialog: Option<OpenDialog>,
     toasts: Entity<ToastStack>,
+    /// The click counts of the presses the header's drag strip received.
+    #[cfg(test)]
+    header_presses: Vec<usize>,
 }
 
 impl AppView {
@@ -364,6 +396,8 @@ impl AppView {
             sync_label,
             dialog: None,
             toasts,
+            #[cfg(test)]
+            header_presses: Vec::new(),
         };
         view.reload(cx);
         view
@@ -510,7 +544,7 @@ impl AppView {
     }
 
     /// `move`.
-    fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
+    fn step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         if self.items.is_empty() || self.dialog.is_some() {
             return;
         }
@@ -518,6 +552,29 @@ impl AppView {
         let next = (index + delta).clamp(0, self.items.len() as isize - 1) as usize;
         let id = self.items[next].id.clone();
         self.select(Some(id), cx);
+        self.keep_focus(window);
+    }
+
+    /// Puts focus back on the deck itself. A card that was tabbed to or clicked holds
+    /// focus, and the list builds only the cards in view: once it scrolls away, the
+    /// focus would point at nothing and j/k would stop reaching the view.
+    fn keep_focus(&self, window: &mut Window) {
+        window.focus(&self.focus);
+    }
+
+    /// A press on the header's empty strip: a double-click does what the system says a
+    /// title bar double-click does (`AppleActionOnDoubleClick`: zoom, minimise, fill
+    /// or nothing), anything else starts dragging the window.
+    fn header_pressed(&mut self, event: &MouseDownEvent, window: &mut Window) {
+        #[cfg(test)]
+        {
+            self.header_presses.push(event.click_count);
+        }
+        if event.click_count >= 2 {
+            window.titlebar_double_click();
+        } else {
+            window_drag::begin_window_drag();
+        }
     }
 
     fn clear_filters(&mut self, cx: &mut Context<Self>) {
@@ -589,10 +646,11 @@ impl AppView {
     /// Cmd-F: show the filters and put the caret in the search field.
     fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
         self.show_filters = true;
+        // The field mounts in the frame this notification draws, and focus is a handle
+        // the window holds rather than something the element tree has to contain yet,
+        // so there is nothing to wait for (the TSX waited a frame for React to mount it).
+        self.search.read(cx).focus(window);
         cx.notify();
-        let search = self.search.clone();
-        // Wait for the field to mount before focusing it.
-        window.on_next_frame(move |window, cx| search.read(cx).focus(window));
     }
 
     /// The pull request pane is a new view whenever the selected item changes
@@ -623,40 +681,56 @@ impl AppView {
                 item,
                 label,
                 selected,
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.select(Some(id.clone()), cx)),
+                cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    this.select(Some(id.clone()), cx);
+                    // A click leaves focus on the deck (see `keep_focus`); Enter on a
+                    // tabbed-to card leaves it there, so Tab carries on from that card.
+                    if event.mouse_position().is_some() {
+                        this.keep_focus(window);
+                    }
+                }),
             ))
             .into_any_element()
     }
 
+    /// The text of the failing-account banner's tooltip, one block per account, or
+    /// `None` when every account synced.
+    fn sync_problems(&self) -> Option<String> {
+        let text = self
+            .statuses
+            .iter()
+            .filter(|status| !status.ok)
+            .map(|status| {
+                let label = self
+                    .account_for(&status.account_id)
+                    .map(|account| account.label.as_str())
+                    .unwrap_or("Account");
+                format!(
+                    "{label}: {}",
+                    status.error.as_deref().unwrap_or("Sync failed")
+                )
+            })
+            .collect::<Vec<_>>();
+        (!text.is_empty()).then(|| text.join("\n\n"))
+    }
+
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let failing: Vec<&AccountStatus> = self.statuses.iter().filter(|s| !s.ok).collect();
         let filters_active = self.filters.active();
         let syncing = self.syncing;
 
-        let failing_button = (!failing.is_empty()).then(|| {
-            let text = failing
-                .iter()
-                .map(|status| {
-                    let label = self
-                        .account_for(&status.account_id)
-                        .map(|account| account.label.as_str())
-                        .unwrap_or("Account");
-                    format!(
-                        "{label}: {}",
-                        status.error.as_deref().unwrap_or("Sync failed")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            Button::new("sync-problems")
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::Icon)
-                .tooltip(text)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.open_dialog(DialogKind::Accounts, window, cx)
-                }))
-                .child(icon_child_in(IconName::TriangleAlert, colors.bad))
+        let failing_button = self.sync_problems().map(|text| {
+            tag(
+                "sync-problems",
+                Button::new("sync-problems")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Icon)
+                    .tooltip(text)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_dialog(DialogKind::Accounts, window, cx)
+                    }))
+                    .child(icon_child_in(IconName::TriangleAlert, colors.bad)),
+            )
         });
 
         div()
@@ -670,8 +744,14 @@ impl AppView {
             .pr(rpx(12.))
             .border_b_1()
             .border_color(colors.border)
-            // The strip under the traffic lights the whole window can be dragged by.
-            .window_control_area(WindowControlArea::Drag)
+            // The strip under the traffic lights the whole window can be dragged by
+            // (`-webkit-app-region: drag`), and double-clicked like a title bar.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, _| {
+                    this.header_pressed(event, window)
+                }),
+            )
             .child(
                 div()
                     .flex()
@@ -692,8 +772,11 @@ impl AppView {
                     .flex()
                     .items_center()
                     .gap(rpx(4.))
+                    // `no-drag`: a press on a button is a click, not the start of a drag.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .children(failing_button)
-                    .child(
+                    .child(tag(
+                        "filter",
                         Button::new("filter")
                             .variant(if self.show_filters || filters_active {
                                 ButtonVariant::Subtle
@@ -714,8 +797,9 @@ impl AppView {
                                 this.show_filters = !this.show_filters;
                                 cx.notify();
                             })),
-                    )
-                    .child(
+                    ))
+                    .child(tag(
+                        "refresh",
                         Button::new("refresh")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Icon)
@@ -728,8 +812,9 @@ impl AppView {
                                     .color(colors.muted_foreground);
                                 if syncing { icon.spin() } else { icon }
                             })),
-                    )
-                    .child(
+                    ))
+                    .child(tag(
+                        "accounts",
                         Button::new("accounts")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Icon)
@@ -738,8 +823,9 @@ impl AppView {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_dialog(DialogKind::Accounts, window, cx)
                             })),
-                    )
-                    .child(
+                    ))
+                    .child(tag(
+                        "settings",
                         Button::new("settings")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Icon)
@@ -748,7 +834,7 @@ impl AppView {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_dialog(DialogKind::Settings, window, cx)
                             })),
-                    ),
+                    )),
             )
     }
 
@@ -791,13 +877,14 @@ impl AppView {
                     .child(div().flex_1().min_w_0().child(self.account_select.clone()))
                     .child(div().flex_1().min_w_0().child(self.checks_select.clone()))
                     .when(self.filters.active(), |d| {
-                        d.child(
+                        d.child(tag(
+                            "clear-filters",
                             Button::new("clear-filters")
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::Icon)
                                 .on_click(cx.listener(|this, _, _, cx| this.clear_filters(cx)))
                                 .child(icon_child(IconName::X, colors)),
-                        )
+                        ))
                     }),
             )
     }
@@ -809,16 +896,16 @@ impl AppView {
                 Icon::new(IconName::UserRoundPlus),
                 "No accounts connected",
                 "Add a GitHub, GitLab, Forgejo or Bitbucket account to start collecting the reviews people are waiting on you for.",
-                Some(
+                Some(tag(
+                    "empty-add-account",
                     Button::new("empty-add-account")
                         .variant(ButtonVariant::Default)
                         .size(ButtonSize::Sm)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_dialog(DialogKind::Accounts, window, cx)
                         }))
-                        .child("Add an account")
-                        .into_any_element(),
-                ),
+                        .child("Add an account"),
+                )),
                 cx,
             ),
             DeckEmptyState::Syncing => empty(
@@ -842,16 +929,16 @@ impl AppView {
                         plural(self.hidden_drafts, "draft"),
                         if one { "is" } else { "are" }
                     ),
-                    Some(
+                    Some(tag(
+                        "empty-show-drafts",
                         Button::new("empty-show-drafts")
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.reveal_drafts = true;
                                 this.recompute(cx);
                             }))
-                            .child(if one { "Show it" } else { "Show them" })
-                            .into_any_element(),
-                    ),
+                            .child(if one { "Show it" } else { "Show them" }),
+                    )),
                     cx,
                 )
             }
@@ -859,13 +946,13 @@ impl AppView {
                 Icon::new(IconName::Inbox),
                 "Nothing matches",
                 "No review requests match the current filters.",
-                Some(
+                Some(tag(
+                    "empty-clear-filters",
                     Button::new("empty-clear-filters")
                         .size(ButtonSize::Sm)
                         .on_click(cx.listener(|this, _, _, cx| this.clear_filters(cx)))
-                        .child("Clear filters")
-                        .into_any_element(),
-                ),
+                        .child("Clear filters"),
+                )),
                 cx,
             ),
             DeckEmptyState::InboxZero => empty(
@@ -892,14 +979,27 @@ impl AppView {
             .text_size(rpx(11.))
             .line_height(rpx(16.))
             .text_color(muted)
-            .child(format!(
-                "{} of {} waiting",
-                self.items.len(),
-                self.all_items.len()
+            .child(tag(
+                format!(
+                    "footer:{} of {} waiting",
+                    self.items.len(),
+                    self.all_items.len()
+                ),
+                format!("{} of {} waiting", self.items.len(), self.all_items.len()),
             ))
             .when(self.hidden_drafts > 0, |d| {
                 let foreground = colors.foreground;
-                d.child(
+                let text = format!(
+                    "{} {}",
+                    plural(self.hidden_drafts, "draft"),
+                    if self.reveal_drafts {
+                        "shown"
+                    } else {
+                        "hidden"
+                    }
+                );
+                d.child(tag(
+                    format!("toggle-drafts:{text}"),
                     div()
                         .id("toggle-drafts")
                         .ml(rpx(8.))
@@ -910,16 +1010,8 @@ impl AppView {
                             this.reveal_drafts = !this.reveal_drafts;
                             this.recompute(cx);
                         }))
-                        .child(format!(
-                            "{} {}",
-                            plural(self.hidden_drafts, "draft"),
-                            if self.reveal_drafts {
-                                "shown"
-                            } else {
-                                "hidden"
-                            }
-                        )),
-                )
+                        .child(text),
+                ))
             })
             .child(
                 div()
@@ -945,6 +1037,12 @@ fn empty(
     cx: &App,
 ) -> AnyElement {
     let colors = cx.theme().colors;
+    let title_el = div()
+        .text_size(rpx(13.5))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .child(title);
+    #[cfg(test)]
+    let title_el = title_el.debug_selector(|| format!("empty:{title}"));
     div()
         .flex()
         .flex_col()
@@ -963,12 +1061,7 @@ fn empty(
                 .bg(colors.muted)
                 .child(icon.size(20.).color(colors.muted_foreground)),
         )
-        .child(
-            div()
-                .text_size(rpx(13.5))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .child(title),
-        )
+        .child(title_el)
         .child(
             div()
                 .max_w(rpx(288.))
@@ -1074,9 +1167,13 @@ impl Render for AppView {
         div()
             .key_context("AppView")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.step(1, cx)))
-            .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.step(-1, cx)))
+            .on_action(cx.listener(|this, _: &SelectNext, window, cx| this.step(1, window, cx)))
+            .on_action(cx.listener(|this, _: &SelectPrev, window, cx| this.step(-1, window, cx)))
             .on_action(cx.listener(Self::focus_search))
+            // Tab walks the cards, the pills and the fields, as the browser did. The
+            // dialogs answer these first and keep the focus inside themselves.
+            .on_action(cx.listener(|_, _: &FocusNext, window, _| window.focus_next()))
+            .on_action(cx.listener(|_, _: &FocusPrev, window, _| window.focus_prev()))
             .relative()
             .size_full()
             .flex()
@@ -1105,4 +1202,868 @@ fn icon_child_in(name: IconName, color: gpui::Hsla) -> gpui::Div {
         .flex()
         .justify_center()
         .child(Icon::new(name).size(16.).color(color))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+    use futures::future::LocalBoxFuture;
+    use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point};
+    use reviewdeck_core::demo::DEMO_ITEMS;
+    use reviewdeck_core::error::{Result, msg};
+    use reviewdeck_core::http::{Http, MockResponse};
+    use reviewdeck_core::model::{
+        ApprovalOutcome, ApprovalSummary, CheckSummary, DraftComment, MyReviewState, NewAccount,
+        ProviderKind, ReviewVerdict, ThemeMode, make_item_id,
+    };
+    use reviewdeck_core::providers::Session;
+    use reviewdeck_core::store::{MemoryTokens, TokenStore, Vault};
+
+    use super::*;
+    use crate::state::{AppDeps, Remote};
+    use crate::ui::theme::Theme;
+
+    fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Scripted hosts: what each account returns and which ones fail.
+    #[derive(Default)]
+    struct Hosts {
+        reviews: Mutex<HashMap<String, Vec<ReviewItem>>>,
+        failing: Mutex<HashSet<String>>,
+    }
+
+    impl Remote for Hosts {
+        fn list_review_requests(
+            &self,
+            session: Session,
+        ) -> LocalBoxFuture<'static, Result<Vec<ReviewItem>>> {
+            let answer = if locked(&self.failing).contains(&session.account.id) {
+                Err(msg("Could not reach GitHub."))
+            } else {
+                Ok(locked(&self.reviews)
+                    .get(&session.account.id)
+                    .cloned()
+                    .unwrap_or_default())
+            };
+            Box::pin(async move { answer })
+        }
+
+        fn refresh_checks(
+            &self,
+            _: Session,
+            _: ReviewItem,
+        ) -> LocalBoxFuture<'static, Result<CheckSummary>> {
+            Box::pin(async { Err(msg("not scripted")) })
+        }
+
+        fn submit_review(
+            &self,
+            _: Session,
+            _: ReviewItem,
+            _: ReviewVerdict,
+            _: String,
+            _: Vec<DraftComment>,
+        ) -> LocalBoxFuture<'static, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_vault() -> Arc<Vault> {
+        let dir = std::env::temp_dir().join(format!(
+            "reviewdeck-app-view-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tokens: Arc<dyn TokenStore> = Arc::new(MemoryTokens::new());
+        Arc::new(Vault::open_at(dir.join("reviewdeck.json"), tokens))
+    }
+
+    fn add_account(vault: &Vault, label: &str) -> Account {
+        let added = vault.add_account(
+            NewAccount {
+                kind: ProviderKind::Github,
+                label: label.into(),
+                base_url: "https://api.github.com".into(),
+                web_url: "https://github.com".into(),
+                username: "octocat".into(),
+                display_name: "Octo Cat".into(),
+                avatar_url: String::new(),
+                agent_command: None,
+            },
+            "ghp_test",
+        );
+        match added {
+            Ok(account) => account,
+            Err(error) => panic!("the fixture vault refused an account: {error}"),
+        }
+    }
+
+    /// A finished, unapproved review on `account_id` titled `title`; the higher the
+    /// number the more recently it was updated, so the deck lists them newest first.
+    fn review(account_id: &str, number: u64, title: &str) -> ReviewItem {
+        let mut item = DEMO_ITEMS[0].clone();
+        item.account_id = account_id.to_string();
+        item.number = number;
+        item.id = make_item_id(account_id, &item.repo_key, number);
+        item.title = title.to_string();
+        item.draft = false;
+        item.checks.status = CheckStatus::Passed;
+        item.my_review_state = MyReviewState::Pending;
+        item.approvals = ApprovalSummary {
+            given: 0,
+            required: None,
+            outcome: ApprovalOutcome::NoneRequired,
+        };
+        item.updated_at = format!("2026-03-0{number}T10:00:00Z");
+        item
+    }
+
+    struct Rig {
+        state: Entity<AppState>,
+        hosts: Arc<Hosts>,
+        accounts: Vec<Account>,
+    }
+
+    impl Rig {
+        /// An app state over a temporary vault holding one account per label.
+        fn new(cx: &mut TestAppContext, labels: &[&str]) -> Rig {
+            let vault = test_vault();
+            let accounts: Vec<Account> = labels
+                .iter()
+                .map(|label| add_account(&vault, label))
+                .collect();
+            let hosts = Arc::new(Hosts::default());
+            let deps = AppDeps {
+                http: Http::mock(|_| MockResponse::new(500, Vec::new())),
+                vault,
+                remote: Some(hosts.clone()),
+                demo: false,
+                clock: None,
+                notify: None,
+                tray: None,
+            };
+            let state = cx.new(|cx| AppState::new(deps, cx));
+            cx.update(|cx| {
+                cx.set_global(GlobalState(state.clone()));
+                Theme::apply(ThemeMode::Light, cx);
+                crate::ui::components::bind_keys(cx);
+                bind_keys(cx);
+            });
+            Rig {
+                state,
+                hosts,
+                accounts,
+            }
+        }
+
+        fn script(&self, account: usize, reviews: Vec<ReviewItem>) {
+            locked(&self.hosts.reviews).insert(self.accounts[account].id.clone(), reviews);
+        }
+
+        fn fail(&self, account: usize, failing: bool) {
+            let id = self.accounts[account].id.clone();
+            let mut set = locked(&self.hosts.failing);
+            if failing {
+                set.insert(id);
+            } else {
+                set.remove(&id);
+            }
+        }
+
+        fn sync(&self, cx: &mut VisualTestContext) {
+            let task = self.state.update(cx, |state, cx| state.refresh(cx));
+            cx.executor().block_test(task).expect("the sync completes");
+            cx.run_until_parked();
+        }
+
+        fn hide_drafts(&self, hide: bool, cx: &mut VisualTestContext) {
+            self.state.update(cx, |state, cx| {
+                state
+                    .set_settings(|settings| settings.hide_drafts = hide, cx)
+                    .expect("settings save");
+            });
+            cx.run_until_parked();
+        }
+    }
+
+    fn open(cx: &mut TestAppContext) -> (Entity<AppView>, &mut VisualTestContext) {
+        let (view, vcx) = cx.add_window_view(AppView::new);
+        vcx.run_until_parked();
+        (view, vcx)
+    }
+
+    fn selected(view: &Entity<AppView>, cx: &mut VisualTestContext) -> Option<String> {
+        view.read_with(cx, |view, _| view.selected_id.clone())
+    }
+
+    fn shown(view: &Entity<AppView>, cx: &mut VisualTestContext) -> Vec<String> {
+        view.read_with(cx, |view, _| {
+            view.items.iter().map(|item| item.title.clone()).collect()
+        })
+    }
+
+    /// The selectors are `&'static` in gpui; leaking a test's few names is fine.
+    fn leak(name: impl Into<String>) -> &'static str {
+        Box::leak(name.into().into_boxed_str())
+    }
+
+    fn click(name: impl Into<String>, cx: &mut VisualTestContext) {
+        let name = leak(name);
+        let bounds = cx
+            .debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} is not on screen"));
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    fn on_screen(name: impl Into<String>, cx: &mut VisualTestContext) -> bool {
+        cx.debug_bounds(leak(name)).is_some()
+    }
+
+    fn dialog_is(view: &Entity<AppView>, kind: Option<DialogKind>, cx: &mut VisualTestContext) {
+        view.read_with(cx, |view, _| {
+            let open = match &view.dialog {
+                None => None,
+                Some(OpenDialog::Accounts(_)) => Some(DialogKind::Accounts),
+                Some(OpenDialog::Settings(_)) => Some(DialogKind::Settings),
+                Some(OpenDialog::Schedule(_)) => Some(DialogKind::Schedule),
+            };
+            assert_eq!(
+                open.map(|kind| format!("{kind:?}")),
+                kind.map(|kind| format!("{kind:?}"))
+            );
+        });
+    }
+
+    fn three_reviews(rig: &Rig) {
+        let account = &rig.accounts[0].id;
+        rig.script(
+            0,
+            vec![
+                review(account, 1, "Alpha change"),
+                review(account, 2, "Beta change"),
+                review(account, 3, "Gamma change"),
+            ],
+        );
+    }
+
+    /// The ids of the three reviews, in the order the deck lists them (newest first).
+    fn ids(rig: &Rig) -> Vec<String> {
+        (1..=3u64)
+            .rev()
+            .map(|number| review(&rig.accounts[0].id, number, "").id)
+            .collect()
+    }
+
+    // ---- filters -------------------------------------------------------------
+
+    #[test]
+    fn the_query_matches_title_repo_author_and_number() {
+        let mut item = review("a", 42, "Fix the flux capacitor");
+        item.repo = "acme/Widgets".into();
+        item.author.name = "Marty McFly".into();
+        let items = vec![Arc::new(item)];
+        let settings = Settings::default();
+        let find = |query: &str| {
+            let filters = Filters {
+                query: query.to_string(),
+                ..Filters::default()
+            };
+            apply_filters(&items, &filters, &settings).len()
+        };
+        assert_eq!(find("FLUX"), 1, "title, any case");
+        assert_eq!(find("widgets"), 1, "repo");
+        assert_eq!(find("mcfly"), 1, "author");
+        assert_eq!(find("42"), 1, "number");
+        assert_eq!(find("  flux  "), 1, "the needle is trimmed");
+        assert_eq!(find("zzz"), 0);
+        assert_eq!(find(""), 1);
+    }
+
+    #[test]
+    fn account_and_check_filters_narrow_the_deck() {
+        let mut passed = review("a", 1, "One");
+        passed.checks.status = CheckStatus::Passed;
+        let mut other = review("b", 2, "Two");
+        other.checks.status = CheckStatus::Failed;
+        let items = vec![Arc::new(passed), Arc::new(other)];
+        let settings = Settings::default();
+        let by = |account: Option<&str>, checks: Option<CheckStatus>| {
+            let filters = Filters {
+                query: String::new(),
+                account: account.map(str::to_string),
+                checks,
+            };
+            apply_filters(&items, &filters, &settings).len()
+        };
+        assert_eq!(by(None, None), 2);
+        assert_eq!(by(Some("a"), None), 1);
+        assert_eq!(by(None, Some(CheckStatus::Failed)), 1);
+        assert_eq!(by(Some("a"), Some(CheckStatus::Failed)), 0);
+    }
+
+    // ---- empty states --------------------------------------------------------
+
+    #[gpui::test]
+    fn no_accounts_offers_to_add_one(cx: &mut TestAppContext) {
+        let _rig = Rig::new(cx, &[]);
+        let (view, cx) = open(cx);
+        assert!(on_screen("empty:No accounts connected", cx));
+        assert!(on_screen("empty:Nothing selected", cx));
+        click("empty-add-account", cx);
+        dialog_is(&view, Some(DialogKind::Accounts), cx);
+    }
+
+    #[gpui::test]
+    fn an_account_that_has_not_synced_says_it_is_checking(cx: &mut TestAppContext) {
+        let _rig = Rig::new(cx, &["Work"]);
+        let (_view, cx) = open(cx);
+        assert!(on_screen("empty:Checking for reviews…", cx));
+        assert!(on_screen("sync-label:Not synced yet", cx));
+        assert!(on_screen("footer:0 of 0 waiting", cx));
+    }
+
+    #[gpui::test]
+    fn a_synced_empty_deck_is_inbox_zero(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        assert!(on_screen("empty:Inbox zero", cx));
+        assert_eq!(
+            view.read_with(cx, |view, _| view.empty),
+            Some(DeckEmptyState::InboxZero)
+        );
+        assert!(on_screen("sync-label:Updated just now", cx));
+    }
+
+    #[gpui::test]
+    fn a_deck_of_only_drafts_says_so_and_can_show_them(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        let mut draft = review(&rig.accounts[0].id, 1, "Wip one");
+        draft.draft = true;
+        rig.script(0, vec![draft]);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        assert!(on_screen("empty:Only a draft waiting", cx));
+        assert!(on_screen("footer:0 of 1 waiting", cx));
+        assert!(on_screen("toggle-drafts:1 draft hidden", cx));
+
+        click("empty-show-drafts", cx);
+        assert_eq!(shown(&view, cx), vec!["Wip one"]);
+        assert!(on_screen("toggle-drafts:1 draft shown", cx));
+        assert!(on_screen("footer:1 of 1 waiting", cx));
+        assert_eq!(view.read_with(cx, |view, _| view.empty), None);
+        assert!(selected(&view, cx).is_some(), "the first card is selected");
+
+        click("toggle-drafts:1 draft shown", cx);
+        assert!(shown(&view, cx).is_empty());
+        assert!(on_screen("empty:Only a draft waiting", cx));
+        assert_eq!(selected(&view, cx), None);
+    }
+
+    #[gpui::test]
+    fn several_drafts_are_plural(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        let mut a = review(&rig.accounts[0].id, 1, "Wip one");
+        a.draft = true;
+        let mut b = review(&rig.accounts[0].id, 2, "Wip two");
+        b.draft = true;
+        rig.script(0, vec![a, b]);
+        let (_view, cx) = open(cx);
+        rig.sync(cx);
+        assert!(on_screen("empty:Only drafts waiting", cx));
+        assert!(on_screen("toggle-drafts:2 drafts hidden", cx));
+    }
+
+    #[gpui::test]
+    fn drafts_alongside_finished_reviews_are_counted_in_the_footer(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        let mut draft = review(&rig.accounts[0].id, 1, "Wip one");
+        draft.draft = true;
+        rig.script(0, vec![draft, review(&rig.accounts[0].id, 2, "Done one")]);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        assert_eq!(shown(&view, cx), vec!["Done one"]);
+        assert!(on_screen("footer:1 of 2 waiting", cx));
+        assert!(on_screen("toggle-drafts:1 draft hidden", cx));
+        click("toggle-drafts:1 draft hidden", cx);
+        assert_eq!(shown(&view, cx), vec!["Done one", "Wip one"]);
+        assert!(on_screen("footer:2 of 2 waiting", cx));
+    }
+
+    #[gpui::test]
+    fn turning_the_drafts_preference_back_on_ends_a_reveal(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        let mut draft = review(&rig.accounts[0].id, 1, "Wip one");
+        draft.draft = true;
+        rig.script(0, vec![draft]);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        click("empty-show-drafts", cx);
+        assert_eq!(shown(&view, cx).len(), 1);
+
+        // Off: drafts are no longer held back, so there is nothing to reveal.
+        rig.hide_drafts(false, cx);
+        assert_eq!(shown(&view, cx).len(), 1);
+        assert_eq!(view.read_with(cx, |view, _| view.hidden_drafts), 0);
+
+        // On again: the earlier reveal does not survive the decision.
+        rig.hide_drafts(true, cx);
+        assert!(shown(&view, cx).is_empty());
+        assert!(on_screen("empty:Only a draft waiting", cx));
+    }
+
+    #[gpui::test]
+    fn filters_with_no_match_offer_to_clear_them(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+
+        cx.simulate_keystrokes("cmd-f");
+        cx.simulate_input("zzz");
+        cx.run_until_parked();
+        assert!(shown(&view, cx).is_empty());
+        assert!(on_screen("empty:Nothing matches", cx));
+        assert!(
+            on_screen("clear-filters", cx),
+            "the filter bar can clear too"
+        );
+
+        click("empty-clear-filters", cx);
+        assert_eq!(shown(&view, cx).len(), 3);
+        view.read_with(cx, |view, cx| {
+            assert!(view.search.read(cx).text().is_empty());
+            assert!(!view.filters.active());
+        });
+        assert!(!view.read_with(cx, |view, _| view.filters.active()));
+    }
+
+    // ---- the failing-account banner -----------------------------------------
+
+    #[gpui::test]
+    fn a_failing_account_shows_the_banner_and_opens_the_accounts(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work", "Home"]);
+        rig.script(1, vec![review(&rig.accounts[1].id, 1, "From home")]);
+        rig.fail(0, true);
+        let (view, cx) = open(cx);
+        assert!(!on_screen("sync-problems", cx), "nothing has failed yet");
+        rig.sync(cx);
+        assert!(on_screen("sync-problems", cx));
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.sync_problems().as_deref(),
+                Some("Work: Could not reach GitHub.")
+            );
+        });
+        // The other account's reviews are still there.
+        assert_eq!(shown(&view, cx), vec!["From home"]);
+
+        click("sync-problems", cx);
+        dialog_is(&view, Some(DialogKind::Accounts), cx);
+
+        rig.fail(0, false);
+        cx.simulate_keystrokes("escape");
+        dialog_is(&view, None, cx);
+        rig.sync(cx);
+        assert_eq!(view.read_with(cx, |view, _| view.sync_problems()), None);
+    }
+
+    #[gpui::test]
+    fn two_failing_accounts_are_listed_apart(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work", "Home"]);
+        rig.fail(0, true);
+        rig.fail(1, true);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.sync_problems().as_deref(),
+                Some("Work: Could not reach GitHub.\n\nHome: Could not reach GitHub.")
+            );
+        });
+    }
+
+    // ---- selection and keys --------------------------------------------------
+
+    #[gpui::test]
+    fn the_first_card_is_selected_and_j_k_and_arrows_move_it(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        let ids = ids(&rig);
+        assert_eq!(
+            shown(&view, cx),
+            vec!["Gamma change", "Beta change", "Alpha change"]
+        );
+        assert_eq!(selected(&view, cx), Some(ids[0].clone()));
+
+        cx.simulate_keystrokes("k");
+        assert_eq!(
+            selected(&view, cx),
+            Some(ids[0].clone()),
+            "clamped at the top"
+        );
+        cx.simulate_keystrokes("j");
+        assert_eq!(selected(&view, cx), Some(ids[1].clone()));
+        cx.simulate_keystrokes("down");
+        assert_eq!(selected(&view, cx), Some(ids[2].clone()));
+        cx.simulate_keystrokes("j");
+        assert_eq!(
+            selected(&view, cx),
+            Some(ids[2].clone()),
+            "clamped at the bottom"
+        );
+        cx.simulate_keystrokes("up");
+        assert_eq!(selected(&view, cx), Some(ids[1].clone()));
+        cx.simulate_keystrokes("k");
+        assert_eq!(selected(&view, cx), Some(ids[0].clone()));
+    }
+
+    #[gpui::test]
+    fn clicking_a_card_selects_it_and_keeps_the_keys_working(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        let ids = ids(&rig);
+        click(format!("card:{}", ids[2]), cx);
+        assert_eq!(selected(&view, cx), Some(ids[2].clone()));
+        cx.simulate_keystrokes("k");
+        assert_eq!(
+            selected(&view, cx),
+            Some(ids[1].clone()),
+            "focus went back to the deck, so k still moves"
+        );
+    }
+
+    #[gpui::test]
+    fn the_keys_are_left_to_a_text_field(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+
+        cx.simulate_keystrokes("cmd-f");
+        cx.run_until_parked();
+        let search = view.read_with(cx, |view, _| view.search.clone());
+        assert!(
+            view.read_with(cx, |view, _| view.show_filters),
+            "cmd-f opens the filters"
+        );
+        assert!(
+            cx.update(|window, cx| search.read(cx).is_focused(window)),
+            "and puts the caret in the search field"
+        );
+        cx.simulate_input("beta");
+        cx.simulate_keystrokes("j k");
+        assert_eq!(
+            search.read_with(cx, |input, _| input.text().to_string()),
+            "betajk",
+            "j and k are typed, not obeyed"
+        );
+        assert!(shown(&view, cx).is_empty(), "nothing matches betajk");
+        cx.simulate_keystrokes("backspace backspace");
+        assert_eq!(shown(&view, cx), vec!["Beta change"]);
+
+        // Escape closes the filters (keeping the query) and hands the keys back.
+        cx.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| {
+            assert!(!view.show_filters);
+            assert!(view.filters.active(), "the query stays");
+        });
+        cx.simulate_keystrokes("j");
+        assert_eq!(
+            search.read_with(cx, |input, _| input.text().to_string()),
+            "beta",
+            "j no longer reaches the field"
+        );
+    }
+
+    #[gpui::test]
+    fn cmd_f_works_with_the_filters_already_open(cx: &mut TestAppContext) {
+        let _rig = Rig::new(cx, &["Work"]);
+        let (view, cx) = open(cx);
+        click("filter", cx);
+        assert!(view.read_with(cx, |view, _| view.show_filters));
+        cx.simulate_keystrokes("cmd-f");
+        cx.run_until_parked();
+        let search = view.read_with(cx, |view, _| view.search.clone());
+        assert!(cx.update(|window, cx| search.read(cx).is_focused(window)));
+        click("filter", cx);
+        assert!(!view.read_with(cx, |view, _| view.show_filters));
+    }
+
+    #[gpui::test]
+    fn the_account_and_check_selects_filter_the_deck(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work", "Home"]);
+        let mut failed = review(&rig.accounts[0].id, 1, "Red build");
+        failed.checks.status = CheckStatus::Failed;
+        rig.script(0, vec![failed, review(&rig.accounts[0].id, 2, "Green one")]);
+        rig.script(1, vec![review(&rig.accounts[1].id, 3, "From home")]);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        assert_eq!(shown(&view, cx).len(), 3);
+
+        click("filter", cx);
+        let (accounts, checks) = view.read_with(cx, |view, _| {
+            (view.account_select.clone(), view.checks_select.clone())
+        });
+        let home = rig.accounts[1].id.clone();
+        accounts.update(cx, |_, cx| cx.emit(SelectEvent::Changed(home.into())));
+        cx.run_until_parked();
+        assert_eq!(shown(&view, cx), vec!["From home"]);
+
+        accounts.update(cx, |_, cx| cx.emit(SelectEvent::Changed("all".into())));
+        checks.update(cx, |_, cx| cx.emit(SelectEvent::Changed("failed".into())));
+        cx.run_until_parked();
+        assert_eq!(shown(&view, cx), vec!["Red build"]);
+        assert!(on_screen("clear-filters", cx));
+
+        click("clear-filters", cx);
+        assert_eq!(shown(&view, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn a_selection_that_leaves_the_deck_falls_back_to_the_first(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        let ids = ids(&rig);
+        cx.simulate_keystrokes("j");
+        assert_eq!(selected(&view, cx), Some(ids[1].clone()));
+
+        // Beta is closed upstream.
+        let account = rig.accounts[0].id.clone();
+        rig.script(
+            0,
+            vec![
+                review(&account, 1, "Alpha change"),
+                review(&account, 3, "Gamma change"),
+            ],
+        );
+        rig.sync(cx);
+        assert_eq!(selected(&view, cx), Some(ids[0].clone()));
+
+        // And one that stays is left alone when the deck changes around it.
+        cx.simulate_keystrokes("j");
+        let kept = selected(&view, cx);
+        rig.script(
+            0,
+            vec![
+                review(&account, 1, "Alpha change"),
+                review(&account, 3, "Gamma change"),
+                review(&account, 4, "Delta change"),
+            ],
+        );
+        rig.sync(cx);
+        assert_eq!(selected(&view, cx), kept);
+    }
+
+    #[gpui::test]
+    fn an_emptied_deck_selects_nothing(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        rig.script(0, vec![]);
+        rig.sync(cx);
+        assert_eq!(selected(&view, cx), None);
+        assert!(on_screen("empty:Nothing selected", cx));
+        cx.simulate_keystrokes("j k");
+        assert_eq!(selected(&view, cx), None);
+    }
+
+    // ---- events from the app -------------------------------------------------
+
+    #[gpui::test]
+    fn focus_item_selects_that_review(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        let ids = ids(&rig);
+        rig.state
+            .update(cx, |_, cx| cx.emit(AppEvent::FocusItem(ids[2].clone())));
+        cx.run_until_parked();
+        assert_eq!(selected(&view, cx), Some(ids[2].clone()));
+
+        // An id the deck does not hold lands on the first card, as the TSX's effect did.
+        rig.state
+            .update(cx, |_, cx| cx.emit(AppEvent::FocusItem("nope".into())));
+        cx.run_until_parked();
+        assert_eq!(selected(&view, cx), Some(ids[0].clone()));
+    }
+
+    #[gpui::test]
+    fn the_settings_events_open_the_settings_dialog(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        let (view, cx) = open(cx);
+        rig.state.update(cx, |_, cx| {
+            cx.emit(AppEvent::FocusItem("__settings__".into()))
+        });
+        cx.run_until_parked();
+        dialog_is(&view, Some(DialogKind::Settings), cx);
+        cx.simulate_keystrokes("escape");
+        dialog_is(&view, None, cx);
+
+        rig.state
+            .update(cx, |_, cx| cx.emit(AppEvent::OpenSettings));
+        cx.run_until_parked();
+        dialog_is(&view, Some(DialogKind::Settings), cx);
+    }
+
+    // ---- dialogs -------------------------------------------------------------
+
+    #[gpui::test]
+    fn the_header_buttons_open_one_dialog_at_a_time(cx: &mut TestAppContext) {
+        let _rig = Rig::new(cx, &["Work"]);
+        let (view, cx) = open(cx);
+        click("accounts", cx);
+        dialog_is(&view, Some(DialogKind::Accounts), cx);
+        cx.simulate_keystrokes("escape");
+        dialog_is(&view, None, cx);
+
+        click("settings", cx);
+        dialog_is(&view, Some(DialogKind::Settings), cx);
+        // The schedule replaces the settings rather than stacking on them, and closing
+        // it leaves the deck, not the settings.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.open_dialog(DialogKind::Schedule, window, cx)
+            })
+        });
+        dialog_is(&view, Some(DialogKind::Schedule), cx);
+        cx.simulate_keystrokes("escape");
+        dialog_is(&view, None, cx);
+    }
+
+    #[gpui::test]
+    fn the_deck_keys_wait_while_a_dialog_is_open(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        let first = selected(&view, cx);
+        click("accounts", cx);
+        cx.simulate_keystrokes("j j");
+        assert_eq!(selected(&view, cx), first);
+    }
+
+    #[gpui::test]
+    fn the_refresh_button_runs_a_sync(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        click("refresh", cx);
+        cx.run_until_parked();
+        assert_eq!(shown(&view, cx).len(), 3, "the click ran a sync");
+        assert!(on_screen("sync-label:Updated just now", cx));
+    }
+
+    // ---- the header as a title bar ------------------------------------------
+
+    #[gpui::test]
+    fn a_press_on_the_empty_header_drags_and_a_double_press_is_a_title_bar_click(
+        cx: &mut TestAppContext,
+    ) {
+        let _rig = Rig::new(cx, &["Work"]);
+        let (view, cx) = open(cx);
+        let press = |cx: &mut VisualTestContext, x: f32, count: usize| {
+            cx.simulate_event(MouseDownEvent {
+                button: MouseButton::Left,
+                position: point(px(x), px(26.)),
+                modifiers: Modifiers::none(),
+                click_count: count,
+                first_mouse: false,
+            });
+        };
+        press(cx, 700., 1);
+        press(cx, 700., 2);
+        assert_eq!(
+            view.read_with(cx, |view, _| view.header_presses.clone()),
+            vec![1, 2]
+        );
+
+        // On a button it is a click, not a drag.
+        let bounds = cx.debug_bounds("settings").expect("the settings button");
+        let x: f32 = bounds.center().x.into();
+        press(cx, x, 1);
+        assert_eq!(
+            view.read_with(cx, |view, _| view.header_presses.len()),
+            2,
+            "buttons are `no-drag`"
+        );
+
+        // Below the header it is nothing.
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: point(px(700.), px(300.)),
+            modifiers: Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        assert_eq!(view.read_with(cx, |view, _| view.header_presses.len()), 2);
+    }
+
+    // ---- a card ---------------------------------------------------------------
+
+    #[gpui::test]
+    fn a_card_is_a_tab_stop_that_enter_activates(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        let ids = ids(&rig);
+        // Each card is a tab stop followed by its check pill's. Enter is a key-up for
+        // the click gpui makes of it, which `simulate_keystrokes` does not send.
+        let enter = |cx: &mut VisualTestContext| {
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("enter").expect("a keystroke"),
+            });
+            cx.run_until_parked();
+        };
+        cx.simulate_keystrokes("j j");
+        assert_eq!(selected(&view, cx), Some(ids[2].clone()));
+
+        cx.simulate_keystrokes("tab tab tab");
+        enter(cx);
+        assert_eq!(selected(&view, cx), Some(ids[1].clone()), "the second card");
+
+        // Back past the first card's pill to the card itself.
+        cx.simulate_keystrokes("shift-tab shift-tab");
+        enter(cx);
+        assert_eq!(selected(&view, cx), Some(ids[0].clone()), "and back again");
+    }
+
+    #[gpui::test]
+    fn the_check_pill_opens_its_panel_without_selecting_the_card(cx: &mut TestAppContext) {
+        let rig = Rig::new(cx, &["Work"]);
+        three_reviews(&rig);
+        let (view, cx) = open(cx);
+        rig.sync(cx);
+        let ids = ids(&rig);
+        assert_eq!(selected(&view, cx), Some(ids[0].clone()));
+        assert!(!on_screen(format!("pill-{}-panel", ids[2]), cx));
+
+        click(format!("pill-{}", ids[2]), cx);
+        assert!(
+            on_screen(format!("pill-{}-panel", ids[2]), cx),
+            "the runs behind the roll-up are listed"
+        );
+        assert_eq!(
+            selected(&view, cx),
+            Some(ids[0].clone()),
+            "the click stopped at the pill"
+        );
+    }
 }
