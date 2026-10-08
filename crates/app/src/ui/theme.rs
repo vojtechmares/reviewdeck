@@ -34,6 +34,7 @@ pub const MONO_FONT: &str = "Menlo";
 /// `body { font-size: 13.5px }`: the size text takes when nothing says otherwise.
 pub const BASE_TEXT: f32 = 13.5;
 
+#[allow(dead_code)] // the whole scale, as index.css defines it
 /// Tailwind's radius scale as index.css defines it around `--radius: 0.875rem`.
 pub mod radius {
     /// `rounded-sm`: `--radius - 0.5rem`.

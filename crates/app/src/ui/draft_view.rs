@@ -9,8 +9,8 @@
 //! The React component took `onEdit` / `onDelete` from its owner. Here the card calls
 //! [`AppState::update_draft`] and [`AppState::remove_draft`] itself. Both are
 //! synchronous, so the TSX's busy state (which only guarded two overlapping awaits)
-//! has nothing to guard. The state does not notify on a draft change, so the card does
-//! it after each change; whoever lists the drafts observes the state.
+//! has nothing to guard. The state notifies on every draft change, and whoever lists
+//! the drafts observes it.
 
 use gpui::{
     Context, Entity, InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled,
@@ -19,9 +19,11 @@ use gpui::{
 use reviewdeck_core::model::DraftComment;
 
 use crate::state::{AppState, GlobalState};
+use crate::ui::app_view::toast;
 use crate::ui::components::badge::{Badge, BadgeTone};
 use crate::ui::components::button::{Button, ButtonSize, ButtonVariant, with_alpha};
 use crate::ui::components::input::{TextInput, TextInputEvent};
+use crate::ui::components::toast::ToastKind;
 use crate::ui::icons::IconName;
 use crate::ui::markdown_view::MarkdownView;
 use crate::ui::theme::{ActiveTheme, UI_FONT, radius, rpx};
@@ -30,8 +32,6 @@ use crate::ui::thread_view::{image_loader, markdown_context};
 /// The editor that replaces the body while the draft is being changed.
 struct Editor {
     input: Entity<TextInput>,
-    /// Why the last save failed. What was typed is kept.
-    error: Option<SharedString>,
     _subscription: Subscription,
 }
 
@@ -94,7 +94,6 @@ impl DraftCard {
         input.read(cx).focus(window);
         self.editor = Some(Editor {
             input,
-            error: None,
             _subscription: subscription,
         });
         cx.notify();
@@ -119,11 +118,9 @@ impl DraftCard {
             .state
             .update(cx, |state, cx| state.update_draft(&id, &body, cx));
         match result {
-            Ok(_) => {
-                self.editor = None;
-                self.state.update(cx, |_, cx| cx.notify());
-            }
-            Err(error) => editor.error = Some(error.to_string().into()),
+            Ok(_) => self.editor = None,
+            // The editor stays open with what was typed, as it did behind the TSX toast.
+            Err(error) => toast(cx, ToastKind::Bad, error.to_string()),
         }
         cx.notify();
     }
@@ -132,7 +129,6 @@ impl DraftCard {
         let id = self.draft.id.clone();
         self.state.update(cx, |state, cx| {
             state.remove_draft(&id, cx);
-            cx.notify();
         });
     }
 
@@ -161,45 +157,36 @@ impl DraftCard {
     fn editor_view(&self, editor: &Editor, cx: &mut Context<Self>) -> gpui::Div {
         let colors = cx.theme().colors;
         let empty = editor.input.read(cx).text().trim().is_empty();
-        div()
-            .child(editor.input.clone())
-            .children(editor.error.clone().map(|error| {
-                div()
-                    .mt(rpx(4.))
-                    .text_size(rpx(11.5))
-                    .text_color(colors.bad)
-                    .child(error)
-            }))
-            .child(
-                div()
-                    .mt(rpx(6.))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(rpx(6.))
-                    .child(
-                        div()
-                            .mr_auto()
-                            .text_size(rpx(10.5))
-                            .text_color(colors.muted_foreground)
-                            .child("⌘↵ to save"),
-                    )
-                    .child(
-                        Button::new("draft-cancel")
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Ghost)
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel_edit(cx)))
-                            .child("Cancel"),
-                    )
-                    .child(
-                        Button::new("draft-save")
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Default)
-                            .disabled(empty)
-                            .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
-                            .child("Save"),
-                    ),
-            )
+        div().child(editor.input.clone()).child(
+            div()
+                .mt(rpx(6.))
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(rpx(6.))
+                .child(
+                    div()
+                        .mr_auto()
+                        .text_size(rpx(10.5))
+                        .text_color(colors.muted_foreground)
+                        .child("⌘↵ to save"),
+                )
+                .child(
+                    Button::new("draft-cancel")
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Ghost)
+                        .on_click(cx.listener(|this, _, _, cx| this.cancel_edit(cx)))
+                        .child("Cancel"),
+                )
+                .child(
+                    Button::new("draft-save")
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Default)
+                        .disabled(empty)
+                        .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
+                        .child("Save"),
+                ),
+        )
     }
 }
 

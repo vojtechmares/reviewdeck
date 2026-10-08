@@ -1,7 +1,3 @@
-// The views that call these land with the integration; until then they read as
-// unused. Removed at integration, like ui/mod.rs.
-#![allow(dead_code)]
-
 //! Port of src/main/deck.ts, src/main/ipc.ts, src/main/images.ts and the app-level
 //! state the renderer kept in src/renderer/src/hooks/useApp.tsx.
 //!
@@ -379,6 +375,7 @@ impl AppState {
     }
 
     /// `accounts:rename`. Returns the accounts after the change.
+    #[allow(dead_code)] // accounts:rename: the TS exposed it and no view called it
     pub fn rename_account(
         &mut self,
         id: &str,
@@ -473,6 +470,7 @@ impl AppState {
     }
 
     /// Drops one item from the deck, publishing if it was there.
+    #[allow(dead_code)] // deck.ts drop(): ported, it had no caller there either
     pub fn drop_item(&mut self, item_id: &str, cx: &mut Context<Self>) {
         for (_, items) in self.items.iter_mut() {
             if let Some(at) = items.iter().position(|item| item.id == item_id) {
@@ -973,9 +971,12 @@ impl AppState {
         self.drafts.list(item_id)
     }
 
-    /// Restarts the debounce: the drafts are written [`SAVE_DEBOUNCE_MS`] after the
-    /// last change. Replacing the stored task cancels the one still waiting.
+    /// Called after every change to the drafts: tells the views (draft lists, counts,
+    /// the divergence banner) to re-read them, and restarts the debounce - the drafts
+    /// are written [`SAVE_DEBOUNCE_MS`] after the last change. Replacing the stored
+    /// task cancels the one still waiting.
     fn schedule_draft_save(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
         self.draft_save = Some(
             cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 cx.background_executor()
@@ -1056,6 +1057,8 @@ impl AppState {
         {
             eprintln!("[settings] could not change launch at login: {error}");
         }
+        // Views read settings (the diff layout, the filters) on render.
+        cx.notify();
         Ok(next)
     }
 
@@ -1206,6 +1209,7 @@ impl AppState {
     }
 
     /// The interval the sync timer runs at, or `None` while it is stopped.
+    #[allow(dead_code)] // tests read the live interval
     pub fn sync_interval(&self) -> Option<Duration> {
         self.sync_interval
     }

@@ -9,6 +9,9 @@
 //! Shift-Tab to the focus-moving actions, and Escape to [`Dismiss`] inside dialogs and
 //! popovers. The text field's own bindings come from [`input::bind_keys`], which this calls.
 
+// A kit, so its API is broader than what the views happen to call today.
+#![allow(dead_code)]
+
 use gpui::{App, KeyBinding, actions};
 
 pub mod avatar;

@@ -40,9 +40,11 @@ use reviewdeck_core::model::{
 };
 
 use crate::state::{AppState, GlobalState};
+use crate::ui::app_view::toast;
 use crate::ui::components::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::components::glass::GlassExt;
 use crate::ui::components::input::{TextInput, TextInputEvent};
+use crate::ui::components::toast::ToastKind;
 use crate::ui::draft_view::DraftCard;
 use crate::ui::icons::{Icon, IconName};
 use crate::ui::theme::{ActiveTheme, MONO_FONT, UI_FONT, packed, radius, rpx};
@@ -638,20 +640,18 @@ impl DiffView {
             range: target.range,
             refs: self.refs.clone(),
         };
-        let result = self.state.update(cx, |state, cx| {
-            let result = state.add_draft(draft, cx);
-            if result.is_ok() {
-                // `add_draft` does not notify; the draft cards and counts watch for it.
-                cx.notify();
-            }
-            result
-        });
+        let result = self
+            .state
+            .update(cx, |state, cx| state.add_draft(draft, cx));
         match result {
             Ok(_) => {
                 self.sync_state(cx);
                 self.close_composer(f, cx);
             }
+            // PullView.tsx toasted the failure and left the composer open with what
+            // was typed; the message also stays under the composer until it is closed.
             Err(error) => {
+                toast(cx, ToastKind::Bad, error.to_string());
                 if let Some(composer) = &mut self.files[f].composer {
                     composer.error = Some(error.to_string().into());
                 }
