@@ -1372,6 +1372,10 @@ impl PullView {
                     .child(
                         div()
                             .ml_auto()
+                            // A small button's side padding, so the hint stands as far from
+                            // the submit button's icon as a verdict's label does from the
+                            // next verdict's icon.
+                            .mr(rpx(10.))
                             .text_size(rpx(10.5))
                             .text_color(colors.muted_foreground)
                             .child("⌘↵"),
