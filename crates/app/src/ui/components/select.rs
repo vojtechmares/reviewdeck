@@ -398,7 +398,10 @@ impl Render for Select {
             } else {
                 colors.border
             })
-            .bg(colors.surface_strong)
+            // No fill, as in Electron: the TSX `Select` passes `bg-[right_..._center]` after the
+            // field's `bg-surface-strong`, and `cn`'s tailwind-merge reads that as a second
+            // background colour and drops the first. The measured trigger is the card behind it.
+            .bg(gpui::transparent_black())
             .text_size(rpx(font))
             .text_color(text_colour)
             .cursor_pointer()
