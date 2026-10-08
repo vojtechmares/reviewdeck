@@ -84,6 +84,15 @@ FOREIGN="$(otool -L "$EXE" | tail -n +2 | awk '{ print $1 }' |
 	grep -v -e '^/System/Library/' -e '^/usr/lib/' || true)"
 [[ -z "$FOREIGN" ]] || fail "the executable links non-system libraries: $FOREIGN"
 
+# The screenshot hook (crates/app/src/scene.rs) drives the UI from an
+# environment variable and is compiled into debug builds only. Its variable
+# name in the binary means a debug build, or a cfg that slipped, is about to ship.
+# Not grep -q: it stops at the first match, strings dies of SIGPIPE, and under
+# pipefail the whole test reads as false.
+if strings "$EXE" | grep REVIEWDECK_SCENE >/dev/null; then
+	fail "the executable contains the debug-only scene hook (REVIEWDECK_SCENE)"
+fi
+
 codesign --verify --strict "$APP" || fail "$APP is not validly signed"
 
 # The signature has to cover the app's own identity - a linker-signed-only
