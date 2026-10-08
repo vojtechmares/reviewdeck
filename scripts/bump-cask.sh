@@ -97,8 +97,11 @@ cask "reviewdeck" do
 
   uninstall quit: "cz.mares.reviewdeck"
 
-  # Electron names the data directory after package.json's "name" when running
-  # from source and after the bundle when packaged, so both spellings are here.
+  # The app keeps its accounts and settings in Application Support/reviewdeck.
+  # The Electron builds named that directory after package.json's "name" when
+  # running from source and after the bundle when packaged; on the default
+  # case-insensitive volume both are the one directory the native app still
+  # uses, and on a case-sensitive one either may exist, so both spellings stay.
   zap trash: [
     "~/Library/Application Support/Reviewdeck",
     "~/Library/Application Support/reviewdeck",
@@ -112,9 +115,8 @@ cask "reviewdeck" do
     com.apple.quarantine flag on Reviewdeck.app after installing it, which is
     what lets it launch without Gatekeeper refusing to verify it.
 
-    Access tokens are kept in the macOS Keychain via Electron's safeStorage;
-    "brew uninstall --zap" removes the on-disk config but not the Keychain
-    entry.
+    Access tokens are kept in the macOS Keychain; "brew uninstall --zap"
+    removes the on-disk config but not the Keychain entries.
   EOS
 end
 RUBY

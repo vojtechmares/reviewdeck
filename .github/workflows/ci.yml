@@ -15,52 +15,71 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts only help a rebuild on the same machine; on a runner
+  # they are dead weight in the cache.
+  CARGO_INCREMENTAL: 0
+
 jobs:
   build-test:
     name: Build and test
     runs-on: macos-26
-    timeout-minutes: 20
-    env:
-      # electron-builder refuses to sign on pull requests unless this is set,
-      # and an unsigned arm64 bundle will not launch at all. The signature is
-      # ad-hoc, so there is no certificate and no secret for a fork to reach -
-      # the warning the flag silences does not apply here.
-      CSC_FOR_PULL_REQUEST: "true"
+    # gpui from a cold cache is most of this; a warm one is a few minutes.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v7
+      - name: Install the Rust toolchain
+        id: toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 24
-          cache: pnpm
+          components: clippy, rustfmt
+          targets: aarch64-apple-darwin
 
-      # The Electron binary is ~100 MB and is fetched twice - once by the
-      # postinstall hook, once by electron-builder for the target arch.
-      - name: Cache the Electron downloads
+      # gpui compiles its Metal shaders at build time, and from Xcode 26 on the
+      # Metal compiler is a separate download. It is not cached: it is a
+      # system component that only Xcode can install, and fetching it from
+      # Apple's CDN costs about what restoring it from the cache would.
+      - name: Install the Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun metal --version >/dev/null 2>&1; then
+            echo "Metal toolchain already installed"
+          else
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun metal --version
+
+      # gpui and its dependencies are most of the build. The key changes with
+      # the lockfile and the compiler, either of which invalidates the target
+      # directory anyway.
+      - name: Cache the cargo registry and build
         uses: actions/cache@v6
         with:
           path: |
-            ~/Library/Caches/electron
-            ~/Library/Caches/electron-builder
-          key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: electron-${{ runner.os }}-
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test
-        run: pnpm test
+        run: cargo test --workspace --locked
 
-      - name: Typecheck and build
-        run: pnpm build
-
-      # --dir only, so every push exercises packaging and signing without
-      # paying for the dmg. The release workflow builds the real artifacts.
+      # --dir-only, so every push exercises the release build, the bundle and
+      # the signature without paying for the dmg. The release workflow builds
+      # the real artifacts.
       - name: Package the app
-        run: pnpm exec electron-builder --mac --dir --config electron-builder.yml
+        run: ./scripts/bundle.sh --dir-only
 
       - name: Verify the bundle
         run: ./scripts/verify-app.sh release/mac-arm64/Reviewdeck.app
